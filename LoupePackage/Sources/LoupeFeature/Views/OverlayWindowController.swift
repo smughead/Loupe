@@ -2,6 +2,15 @@ import AppKit
 import SwiftUI
 import CoreVideo
 
+// MARK: - Observable State for SwiftUI Canvas
+
+/// Observable state class that allows SwiftUI Canvas to automatically redraw when highlightFrame changes.
+/// This bridges AppKit's mouse tracking events with SwiftUI's reactive rendering system.
+@Observable
+class OverlayState {
+    var highlightFrame: CGRect?
+}
+
 /// Controller for the transparent overlay window that draws element highlights
 @MainActor
 public final class OverlayWindowController: NSWindowController {
@@ -9,7 +18,7 @@ public final class OverlayWindowController: NSWindowController {
     private let inspector: AccessibilityInspector
     private let targetApp: TargetApp
     private var displayLink: CVDisplayLink?
-    private var highlightFrame: CGRect?
+    private let overlayState = OverlayState()
 
     /// Whether inspection mode is active (controlled externally via toggle)
     public var isInspectionActive = false {
@@ -19,9 +28,8 @@ public final class OverlayWindowController: NSWindowController {
 
             if !isInspectionActive {
                 // Clear highlight and hide label when deactivating
-                highlightFrame = nil
+                overlayState.highlightFrame = nil
                 elementLabelController.hide()
-                window?.contentView?.needsDisplay = true
             }
         }
     }
@@ -79,7 +87,7 @@ public final class OverlayWindowController: NSWindowController {
 
     private func setupOverlayContent() {
         let overlayView = OverlayView(
-            highlightFrame: { [weak self] in self?.highlightFrame },
+            overlayState: overlayState,
             annotationBadges: { [weak self] in self?.annotationBadges ?? [] },
             onMouseMoved: { [weak self] location in self?.handleMouseMoved(location) },
             onMouseClicked: { [weak self] in self?.handleMouseClicked() },
@@ -168,8 +176,7 @@ public final class OverlayWindowController: NSWindowController {
             // If target app was deactivated, clear the highlight
             if app.processIdentifier == targetPid {
                 Task { @MainActor in
-                    self?.highlightFrame = nil
-                    self?.window?.contentView?.needsDisplay = true
+                    self?.overlayState.highlightFrame = nil
                 }
             }
         }
@@ -208,14 +215,18 @@ public final class OverlayWindowController: NSWindowController {
         )
     }
 
-    /// Convert an AX frame (top-left origin) to overlay-local coordinates (bottom-left origin)
+    /// Convert an AX frame (top-left origin) to overlay-local coordinates for SwiftUI Canvas (top-left origin)
     private func convertAXFrameToLocal(_ axFrame: CGRect) -> CGRect? {
         guard let window = window, let screen = NSScreen.main else { return nil }
         let windowFrame = window.frame
 
-        let localFrame = NSRect(
+        // Window's top edge in AX coordinates (distance from top of screen to top of window)
+        let windowTopInAX = screen.frame.height - windowFrame.maxY
+
+        // Convert to local coordinates (both AX and SwiftUI Canvas use top-left origin)
+        let localFrame = CGRect(
             x: axFrame.origin.x - windowFrame.origin.x,
-            y: windowFrame.height - (axFrame.origin.y - (screen.frame.height - windowFrame.origin.y - windowFrame.height)) - axFrame.height,
+            y: axFrame.origin.y - windowTopInAX,
             width: axFrame.width,
             height: axFrame.height
         )
@@ -262,24 +273,21 @@ public final class OverlayWindowController: NSWindowController {
 
         // Update highlight frame using shared coordinate conversion
         if let element = inspector.currentElement {
-            highlightFrame = convertAXFrameToLocal(element.frame)
+            overlayState.highlightFrame = convertAXFrameToLocal(element.frame)
 
             // Show element label near the element (convert AX frame to screen coordinates)
             if let screenFrame = convertAXFrameToScreen(element.frame) {
                 elementLabelController.show(for: element, highlightFrame: screenFrame)
             }
         } else {
-            highlightFrame = nil
+            overlayState.highlightFrame = nil
             elementLabelController.hide()
         }
-
-        // Trigger redraw
-        window.contentView?.needsDisplay = true
     }
 
     private func handleMouseClicked() {
         guard let element = inspector.currentElement,
-              let highlightFrame = highlightFrame,
+              let highlightFrame = overlayState.highlightFrame,
               let contentView = window?.contentView else {
             return
         }
@@ -307,7 +315,6 @@ public final class OverlayWindowController: NSWindowController {
                 bundleIdentifier: self.targetApp.bundleIdentifier
             )
             self.updateAnnotationBadges()
-            self.window?.contentView?.needsDisplay = true
         }
     }
 
@@ -337,7 +344,7 @@ public final class OverlayWindowController: NSWindowController {
 // MARK: - Overlay SwiftUI View
 
 struct OverlayView: View {
-    let highlightFrame: () -> CGRect?
+    let overlayState: OverlayState
     let annotationBadges: () -> [AnnotationBadge]
     let onMouseMoved: (NSPoint) -> Void
     let onMouseClicked: () -> Void
@@ -356,7 +363,7 @@ struct OverlayView: View {
                 // Highlight and badges drawing
                 Canvas { context, size in
                     // Draw element highlight
-                    if let frame = highlightFrame() {
+                    if let frame = overlayState.highlightFrame {
                         let rect = CGRect(
                             x: frame.origin.x - 2,
                             y: frame.origin.y - 2,
@@ -364,19 +371,32 @@ struct OverlayView: View {
                             height: frame.height + 4
                         )
 
-                        let path = Path(roundedRect: rect, cornerRadius: 2)
+                        let path = Path(roundedRect: rect, cornerRadius: 3)
 
-                        // Draw dashed green border
+                        // Draw outer glow (multiple strokes with increasing blur/opacity)
+                        context.stroke(
+                            path,
+                            with: .color(.green.opacity(0.3)),
+                            style: StrokeStyle(lineWidth: 8)
+                        )
+
+                        context.stroke(
+                            path,
+                            with: .color(.green.opacity(0.5)),
+                            style: StrokeStyle(lineWidth: 5)
+                        )
+
+                        // Draw solid green border
                         context.stroke(
                             path,
                             with: .color(.green),
-                            style: StrokeStyle(lineWidth: 2, dash: [6, 4])
+                            style: StrokeStyle(lineWidth: 3)
                         )
 
                         // Draw subtle fill
                         context.fill(
                             path,
-                            with: .color(.green.opacity(0.1))
+                            with: .color(.green.opacity(0.08))
                         )
                     }
 
