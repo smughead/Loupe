@@ -28,7 +28,9 @@ public final class AccessibilityInspector {
 
     /// Check if accessibility permission is granted
     public func checkAccessibilityPermission() {
-        isAccessibilityEnabled = AXIsProcessTrusted()
+        let trusted = AXIsProcessTrusted()
+        print("[Loupe] Accessibility check: \(trusted ? "GRANTED" : "DENIED")")
+        isAccessibilityEnabled = trusted
     }
 
     /// Request accessibility permission (shows system prompt)

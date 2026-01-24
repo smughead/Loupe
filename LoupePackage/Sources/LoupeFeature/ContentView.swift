@@ -121,12 +121,17 @@ public struct ContentView: View {
         ContentUnavailableView {
             Label("Accessibility Permission Required", systemImage: "lock.shield")
         } description: {
-            Text("Loupe needs Accessibility permission to inspect UI elements in other applications.")
+            Text("Loupe needs Accessibility permission to inspect UI elements in other applications.\n\nIf you already granted permission, try toggling it off and on in System Settings, then click Check Again.")
         } actions: {
+            Button("Open System Settings") {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+            }
+            .buttonStyle(.borderedProminent)
+
             Button("Grant Permission") {
                 coordinator.inspector.requestAccessibilityPermission()
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
 
             Button("Check Again") {
                 coordinator.inspector.checkAccessibilityPermission()
