@@ -197,6 +197,17 @@ public final class OverlayWindowController: NSWindowController {
         updateAnnotationBadges()
     }
 
+    /// Convert an AX frame (top-left origin) to AppKit screen coordinates (bottom-left origin)
+    private func convertAXFrameToScreen(_ axFrame: CGRect) -> CGRect? {
+        guard let screen = NSScreen.main else { return nil }
+        return NSRect(
+            x: axFrame.origin.x,
+            y: screen.frame.height - axFrame.origin.y - axFrame.height,
+            width: axFrame.width,
+            height: axFrame.height
+        )
+    }
+
     /// Convert an AX frame (top-left origin) to overlay-local coordinates (bottom-left origin)
     private func convertAXFrameToLocal(_ axFrame: CGRect) -> CGRect? {
         guard let window = window, let screen = NSScreen.main else { return nil }
@@ -253,8 +264,10 @@ public final class OverlayWindowController: NSWindowController {
         if let element = inspector.currentElement {
             highlightFrame = convertAXFrameToLocal(element.frame)
 
-            // Show element label near the element (using AX frame for screen positioning)
-            elementLabelController.show(for: element, highlightFrame: element.frame)
+            // Show element label near the element (convert AX frame to screen coordinates)
+            if let screenFrame = convertAXFrameToScreen(element.frame) {
+                elementLabelController.show(for: element, highlightFrame: screenFrame)
+            }
         } else {
             highlightFrame = nil
             elementLabelController.hide()
