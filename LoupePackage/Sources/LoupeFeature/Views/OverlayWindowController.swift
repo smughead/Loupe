@@ -161,7 +161,10 @@ public final class OverlayWindowController: NSWindowController {
         let center = workspace.notificationCenter
         let targetPid = targetApp.id
 
-        // Monitor when any app becomes active
+        // Get Loupe's own process identifier to ignore self-activation
+        let loupePid = ProcessInfo.processInfo.processIdentifier
+
+        // Monitor when any app becomes active to show/hide overlay appropriately
         let activateObserver = center.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
@@ -171,34 +174,23 @@ public final class OverlayWindowController: NSWindowController {
                 return
             }
 
-            // If target app became active, ensure overlay is visible and positioned
             if app.processIdentifier == targetPid {
+                // Target app became active - show overlay
                 Task { @MainActor in
                     self?.window?.orderFront(nil)
                     self?.updateWindowFrame()
                 }
-            }
-        }
-        workspaceObservers.append(activateObserver)
-
-        // Monitor when any app is deactivated
-        let deactivateObserver = center.addObserver(
-            forName: NSWorkspace.didDeactivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
-                return
-            }
-
-            // If target app was deactivated, clear the highlight
-            if app.processIdentifier == targetPid {
+            } else if app.processIdentifier != loupePid {
+                // Some other app (not target, not Loupe) became active - hide overlay
                 Task { @MainActor in
                     self?.overlayState.highlightFrame = nil
+                    self?.elementLabelController.hide()
+                    self?.window?.orderOut(nil)
                 }
             }
+            // If Loupe itself became active, do nothing (keep overlay visible)
         }
-        workspaceObservers.append(deactivateObserver)
+        workspaceObservers.append(activateObserver)
     }
 
     private func updateWindowFrame() {
