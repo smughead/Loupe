@@ -2,6 +2,15 @@ import AppKit
 import SwiftUI
 import CoreVideo
 
+// MARK: - Custom Window for Click Support
+
+/// Custom NSWindow subclass that can become key even when borderless.
+/// Required for transparent overlay windows to receive mouse click events.
+private class OverlayWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 // MARK: - Observable State for SwiftUI Canvas
 
 /// Observable state class that allows SwiftUI Canvas to automatically redraw when highlightFrame changes.
@@ -20,13 +29,21 @@ public final class OverlayWindowController: NSWindowController {
     private var displayLink: CVDisplayLink?
     private let overlayState = OverlayState()
 
+    /// Local event monitor for capturing mouse clicks at the application level
+    private var clickMonitor: Any?
+
     /// Whether inspection mode is active (controlled externally via toggle)
     public var isInspectionActive = false {
         didSet {
             guard isInspectionActive != oldValue else { return }
+            print("[Loupe] isInspectionActive changed to: \(isInspectionActive)")
+            print("[Loupe] Setting window.ignoresMouseEvents to: \(!isInspectionActive)")
             window?.ignoresMouseEvents = !isInspectionActive
 
-            if !isInspectionActive {
+            if isInspectionActive {
+                installClickMonitor()
+            } else {
+                removeClickMonitor()
                 // Clear highlight and hide label when deactivating
                 overlayState.highlightFrame = nil
                 elementLabelController.hide()
@@ -56,8 +73,8 @@ public final class OverlayWindowController: NSWindowController {
         self.inspector = inspector
         self.targetApp = targetApp
 
-        // Create a transparent, borderless window
-        let window = NSWindow(
+        // Create a transparent, borderless window (using custom subclass for click support)
+        let window = OverlayWindow(
             contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
             styleMask: .borderless,
             backing: .buffered,
@@ -68,6 +85,7 @@ public final class OverlayWindowController: NSWindowController {
         window.backgroundColor = .clear
         window.level = .floating
         window.ignoresMouseEvents = true  // Start in pass-through mode
+        window.acceptsMouseMovedEvents = true  // Required to receive mouseMoved events
         window.hasShadow = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
 
@@ -255,14 +273,47 @@ public final class OverlayWindowController: NSWindowController {
 
     // MARK: - Mouse Handling
 
+    /// Install application-level event monitor to capture mouse clicks.
+    /// This bypasses view hierarchy hit-testing issues with transparent overlay windows.
+    private func installClickMonitor() {
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let self = self,
+                  let window = self.window,
+                  self.isInspectionActive else {
+                return event
+            }
+
+            // Check if click is within our window using mouse location in screen coordinates
+            if window.frame.contains(NSEvent.mouseLocation) {
+                self.handleMouseClicked()
+                return nil  // Consume the event
+            }
+            return event  // Pass through clicks outside our window
+        }
+    }
+
+    /// Remove the click event monitor when inspection mode is deactivated
+    private func removeClickMonitor() {
+        if let monitor = clickMonitor {
+            NSEvent.removeMonitor(monitor)
+            clickMonitor = nil
+        }
+    }
+
     private func handleMouseMoved(_ windowLocation: NSPoint) {
-        guard let window = window else { return }
+        guard let window = window else {
+            print("[Loupe] handleMouseMoved: no window")
+            return
+        }
 
         // Convert window-local coordinates to screen coordinates
         let screenPoint = window.convertPoint(toScreen: windowLocation)
 
         // Convert to AX coordinate system (flip Y)
-        guard let screen = NSScreen.main else { return }
+        guard let screen = NSScreen.main else {
+            print("[Loupe] handleMouseMoved: no screen")
+            return
+        }
         let axPoint = CGPoint(
             x: screenPoint.x,
             y: screen.frame.height - screenPoint.y
@@ -270,6 +321,7 @@ public final class OverlayWindowController: NSWindowController {
 
         // Query the accessibility element at this position
         inspector.updateElementAtPosition(axPoint)
+        print("[Loupe] handleMouseMoved at \(axPoint), element: \(inspector.currentElement?.role ?? "nil")")
 
         // Update highlight frame using shared coordinate conversion
         if let element = inspector.currentElement {
@@ -286,9 +338,14 @@ public final class OverlayWindowController: NSWindowController {
     }
 
     private func handleMouseClicked() {
+        print("[Loupe] handleMouseClicked called")
+        print("[Loupe] currentElement: \(inspector.currentElement?.role ?? "nil")")
+        print("[Loupe] highlightFrame: \(overlayState.highlightFrame.map { String(describing: $0) } ?? "nil")")
+
         guard let element = inspector.currentElement,
               let highlightFrame = overlayState.highlightFrame,
               let contentView = window?.contentView else {
+            print("[Loupe] handleMouseClicked: guard failed - missing element, frame, or contentView")
             return
         }
 
@@ -303,8 +360,7 @@ public final class OverlayWindowController: NSWindowController {
         popoverController.show(
             relativeTo: positioningRect,
             of: contentView,
-            elementRole: element.role,
-            elementIdentifier: element.identifier
+            element: element
         ) { [weak self] text in
             guard let self = self else { return }
             _ = self.annotationStore.addAnnotation(
@@ -321,6 +377,9 @@ public final class OverlayWindowController: NSWindowController {
     // MARK: - Lifecycle
 
     public override func close() {
+        // Remove click monitor before closing
+        removeClickMonitor()
+
         if let link = displayLink {
             CVDisplayLinkStop(link)
             displayLink = nil
@@ -359,6 +418,9 @@ struct OverlayView: View {
                 // Transparent background that captures events
                 Color.clear
                     .contentShape(Rectangle())
+                    .onTapGesture {
+                        onMouseClicked()
+                    }
 
                 // Highlight and badges drawing
                 Canvas { context, size in
@@ -503,10 +565,12 @@ class MouseTrackingNSView: NSView {
 
     override func mouseMoved(with event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)
+        print("[Loupe] MouseTrackingNSView.mouseMoved at \(location)")
         onMouseMoved?(location)
     }
 
     override func mouseDown(with event: NSEvent) {
+        print("[Loupe] MouseTrackingNSView.mouseDown")
         onMouseClicked?()
     }
 
