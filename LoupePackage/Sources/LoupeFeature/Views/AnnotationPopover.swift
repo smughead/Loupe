@@ -80,30 +80,43 @@ struct AnnotationPopover: View {
     }
 }
 
-/// Controller for managing the annotation popover presentation
+// MARK: - Popover Panel
+
+/// Custom NSPanel subclass for popover-style presentation without a caret
+private class PopoverPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+
+    override func cancelOperation(_ sender: Any?) {
+        // Handle Escape key
+        close()
+    }
+}
+
+/// Controller for managing the annotation popover presentation using a borderless panel
 @MainActor
 final class AnnotationPopoverController {
-    private var popover: NSPopover?
+    private var panel: NSPanel?
+    private var clickMonitor: Any?
     private var onDismissCallback: (() -> Void)?
 
-    /// Show the annotation popover near a view
+    /// Spacing between click point and panel edge
+    private let panelOffset: CGFloat = 8
+
+    /// Show the annotation popover at a screen position
     func show(
-        relativeTo positioningRect: NSRect,
-        of positioningView: NSView,
-        preferredEdge: NSRectEdge = .maxY,
+        at screenPoint: NSPoint,
+        preferredEdge: NSRectEdge,
         element: AXElementInfo,
         onSave: @escaping (String) -> Void,
         onDismiss: (() -> Void)? = nil
     ) {
-        // Dismiss any existing popover
-        dismiss()
+        // Dismiss any existing panel immediately (no animation when replacing)
+        dismiss(animated: false)
 
         self.onDismissCallback = onDismiss
 
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.animates = true
-
+        // Create the SwiftUI content
         let content = AnnotationPopover(
             element: element,
             onSave: { [weak self] text in
@@ -115,17 +128,200 @@ final class AnnotationPopoverController {
             }
         )
 
-        popover.contentViewController = NSHostingController(rootView: content)
-        popover.show(relativeTo: positioningRect, of: positioningView, preferredEdge: preferredEdge)
+        // Create hosting controller to get content size
+        let hostingController = NSHostingController(rootView: content)
+        let contentSize = hostingController.view.fittingSize
 
-        self.popover = popover
+        // Calculate panel position based on preferred edge
+        let panelOrigin = calculatePanelOrigin(
+            screenPoint: screenPoint,
+            contentSize: contentSize,
+            preferredEdge: preferredEdge
+        )
+
+        // Create the panel
+        let panel = PopoverPanel(
+            contentRect: NSRect(origin: panelOrigin, size: contentSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.level = .popUpMenu
+        panel.hasShadow = true
+        panel.contentViewController = hostingController
+
+        // Style the content view with rounded corners and background
+        if let contentView = panel.contentView {
+            contentView.wantsLayer = true
+            contentView.layer?.cornerRadius = 8
+            contentView.layer?.masksToBounds = true
+            contentView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+            contentView.layer?.borderColor = NSColor.separatorColor.cgColor
+            contentView.layer?.borderWidth = 0.5
+        }
+
+        // Set up initial state for animation (scaled down and transparent)
+        panel.alphaValue = 0
+        if let layer = panel.contentView?.layer {
+            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            // Adjust position to account for anchor point change
+            layer.position = CGPoint(
+                x: layer.frame.midX,
+                y: layer.frame.midY
+            )
+            layer.transform = CATransform3DMakeScale(0.95, 0.95, 1.0)
+        }
+
+        // Show the panel
+        panel.orderFront(nil)
+        panel.makeKey()
+
+        self.panel = panel
+
+        // Animate in with scale + fade
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 1.0
+        }
+
+        // Animate the scale transform separately using Core Animation
+        if let layer = panel.contentView?.layer {
+            let scaleAnimation = CABasicAnimation(keyPath: "transform.scale")
+            scaleAnimation.fromValue = 0.95
+            scaleAnimation.toValue = 1.0
+            scaleAnimation.duration = 0.15
+            scaleAnimation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            scaleAnimation.fillMode = .forwards
+            scaleAnimation.isRemovedOnCompletion = false
+            layer.add(scaleAnimation, forKey: "scaleIn")
+            layer.transform = CATransform3DIdentity
+        }
+
+        // Install click-outside monitor to dismiss
+        installClickOutsideMonitor()
     }
 
-    /// Dismiss the current popover if shown
-    func dismiss() {
-        popover?.close()
-        popover = nil
-        onDismissCallback?()
-        onDismissCallback = nil
+    /// Calculate where to position the panel origin based on the click point and preferred edge
+    private func calculatePanelOrigin(
+        screenPoint: NSPoint,
+        contentSize: NSSize,
+        preferredEdge: NSRectEdge
+    ) -> NSPoint {
+        var origin = screenPoint
+
+        switch preferredEdge {
+        case .minX:
+            // Panel appears to the left of click point
+            origin.x = screenPoint.x - contentSize.width - panelOffset
+            origin.y = screenPoint.y - contentSize.height / 2
+        case .maxX:
+            // Panel appears to the right of click point
+            origin.x = screenPoint.x + panelOffset
+            origin.y = screenPoint.y - contentSize.height / 2
+        case .minY:
+            // Panel appears above click point (in AppKit coords, minY is bottom)
+            origin.x = screenPoint.x - contentSize.width / 2
+            origin.y = screenPoint.y + panelOffset
+        case .maxY:
+            // Panel appears below click point
+            origin.x = screenPoint.x - contentSize.width / 2
+            origin.y = screenPoint.y - contentSize.height - panelOffset
+        @unknown default:
+            origin.x = screenPoint.x + panelOffset
+            origin.y = screenPoint.y - contentSize.height / 2
+        }
+
+        // Ensure panel stays on screen
+        if let screen = NSScreen.main {
+            let screenFrame = screen.visibleFrame
+
+            // Clamp horizontal position
+            if origin.x < screenFrame.minX {
+                origin.x = screenFrame.minX
+            } else if origin.x + contentSize.width > screenFrame.maxX {
+                origin.x = screenFrame.maxX - contentSize.width
+            }
+
+            // Clamp vertical position
+            if origin.y < screenFrame.minY {
+                origin.y = screenFrame.minY
+            } else if origin.y + contentSize.height > screenFrame.maxY {
+                origin.y = screenFrame.maxY - contentSize.height
+            }
+        }
+
+        return origin
+    }
+
+    /// Install event monitor to dismiss when clicking outside the panel
+    private func installClickOutsideMonitor() {
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self = self, let panel = self.panel else { return event }
+
+            // Check if click is outside the panel
+            let clickLocation = NSEvent.mouseLocation
+            if !panel.frame.contains(clickLocation) {
+                self.dismiss()
+            }
+
+            return event
+        }
+    }
+
+    /// Remove the click-outside monitor
+    private func removeClickOutsideMonitor() {
+        if let monitor = clickMonitor {
+            NSEvent.removeMonitor(monitor)
+            clickMonitor = nil
+        }
+    }
+
+    /// Dismiss the current panel if shown
+    /// - Parameter animated: Whether to animate the dismissal. Use `false` when replacing with a new popover.
+    func dismiss(animated: Bool = true) {
+        removeClickOutsideMonitor()
+
+        guard let panel = panel else {
+            onDismissCallback?()
+            onDismissCallback = nil
+            return
+        }
+
+        // Clear reference immediately to prevent multiple popovers
+        self.panel = nil
+
+        if animated {
+            // Animate out with scale + fade
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                panel.animator().alphaValue = 0
+            } completionHandler: { [weak self] in
+                panel.close()
+                self?.onDismissCallback?()
+                self?.onDismissCallback = nil
+            }
+
+            // Animate the scale transform
+            if let layer = panel.contentView?.layer {
+                let scaleAnimation = CABasicAnimation(keyPath: "transform.scale")
+                scaleAnimation.fromValue = 1.0
+                scaleAnimation.toValue = 0.95
+                scaleAnimation.duration = 0.12
+                scaleAnimation.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                scaleAnimation.fillMode = .forwards
+                scaleAnimation.isRemovedOnCompletion = false
+                layer.add(scaleAnimation, forKey: "scaleOut")
+            }
+        } else {
+            // Immediate dismissal (no animation)
+            panel.close()
+            onDismissCallback?()
+            onDismissCallback = nil
+        }
     }
 }

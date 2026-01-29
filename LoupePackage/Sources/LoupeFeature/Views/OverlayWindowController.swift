@@ -204,14 +204,15 @@ public final class OverlayWindowController: NSWindowController {
                     self?.updateWindowFrame()
                 }
             } else if app.processIdentifier != loupePid {
-                // Some other app (not target, not Loupe) became active - hide overlay
+                // Some other app (not target, not Loupe) became active - hide everything
                 Task { @MainActor in
                     self?.overlayState.highlightFrame = nil
                     self?.elementLabelController.hide()
+                    self?.popoverController.dismiss(animated: false)
                     self?.window?.orderOut(nil)
                 }
             }
-            // If Loupe itself became active, do nothing (keep overlay visible)
+            // If Loupe itself became active (e.g., clicking popover), keep overlay visible
         }
         workspaceObservers.append(activateObserver)
     }
@@ -336,6 +337,17 @@ public final class OverlayWindowController: NSWindowController {
         // screenLocation is already in screen coordinates (bottom-left origin)
         // from NSEvent.mouseLocation - no window conversion needed
 
+        // Only process mouse moves if the mouse is within our overlay window
+        // (which is sized to match the target app's window)
+        guard let window = window else { return }
+
+        if !window.frame.contains(screenLocation) {
+            // Mouse is outside the target app's window - clear highlight
+            overlayState.highlightFrame = nil
+            elementLabelController.hide()
+            return
+        }
+
         // Convert to AX coordinate system (flip Y using primary screen height)
         guard let mainScreen = NSScreen.main else {
             print("[Loupe] handleMouseMoved: no main screen")
@@ -367,8 +379,7 @@ public final class OverlayWindowController: NSWindowController {
 
     private func handleMouseClicked(event: NSEvent? = nil) {
         guard let element = inspector.currentElement,
-              let window = window,
-              let container = containerView else {
+              let window = window else {
             return
         }
 
@@ -380,19 +391,6 @@ public final class OverlayWindowController: NSWindowController {
             let screenLocation = NSEvent.mouseLocation
             clickInWindow = window.convertPoint(fromScreen: screenLocation)
         }
-
-        // Convert window coordinates to container view coordinates
-        // The container is an unflipped NSView, so convert(_:from:) gives us
-        // coordinates in standard AppKit orientation (origin at bottom-left)
-        let clickInContainer = container.convert(clickInWindow, from: nil)
-
-        // Create positioning rect at the click point
-        let positioningRect = NSRect(
-            x: clickInContainer.x - 1,
-            y: clickInContainer.y - 1,
-            width: 2,
-            height: 2
-        )
 
         // Smart edge selection based on screen position to avoid collisions:
         // - Near top of screen: use .maxY (popover below, caret up) - plenty of room below
@@ -430,8 +428,7 @@ public final class OverlayWindowController: NSWindowController {
         print("[Loupe] clickInScreen.y=\(clickInScreen.y), screenFrame.maxY=\(screenFrame.maxY), topThreshold=\(topThreshold), edge=\(edgeName)")
 
         popoverController.show(
-            relativeTo: positioningRect,
-            of: container,
+            at: clickInScreen,
             preferredEdge: preferredEdge,
             element: element,
             onSave: { [weak self] text in
