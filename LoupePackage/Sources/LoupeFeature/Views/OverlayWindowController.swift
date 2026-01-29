@@ -69,6 +69,9 @@ public final class OverlayWindowController: NSWindowController {
     /// Controller for floating element label
     private let elementLabelController = ElementLabelWindowController()
 
+    /// Container view that wraps NSHostingView (unflipped, for correct popover positioning)
+    private var containerView: NSView?
+
     public init(inspector: AccessibilityInspector, targetApp: TargetApp) {
         self.inspector = inspector
         self.targetApp = targetApp
@@ -112,7 +115,27 @@ public final class OverlayWindowController: NSWindowController {
             onEscape: { [weak self] in self?.close() }
         )
 
-        window?.contentView = NSHostingView(rootView: overlayView)
+        // Create a container view to wrap NSHostingView
+        // This allows us to add anchor subviews for popover positioning
+        // (NSHostingView doesn't support adding subviews directly)
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.clear.cgColor
+
+        let hostingView = NSHostingView(rootView: overlayView)
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(hostingView)
+
+        // Pin hosting view to fill container
+        NSLayoutConstraint.activate([
+            hostingView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: container.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+
+        window?.contentView = container
+        self.containerView = container
     }
 
     private func startTracking() {
@@ -244,6 +267,23 @@ public final class OverlayWindowController: NSWindowController {
         return localFrame
     }
 
+    /// Convert a rect from overlay-local coordinates (top-left origin, used by SwiftUI Canvas)
+    /// to view coordinates (bottom-left origin, used by NSView/NSPopover positioning)
+    private func convertLocalToViewCoordinates(_ localRect: CGRect) -> CGRect? {
+        guard let contentView = window?.contentView else { return nil }
+        let viewHeight = contentView.bounds.height
+
+        // Flip Y: in top-left origin, Y increases downward
+        // In bottom-left origin, Y increases upward
+        // newY = viewHeight - localY - rectHeight
+        return CGRect(
+            x: localRect.origin.x,
+            y: viewHeight - localRect.origin.y - localRect.height,
+            width: localRect.width,
+            height: localRect.height
+        )
+    }
+
     /// Update cached annotation badge positions in local coordinates
     private func updateAnnotationBadges() {
         annotationBadges = annotationStore.annotations.compactMap { annotation in
@@ -277,7 +317,7 @@ public final class OverlayWindowController: NSWindowController {
 
             // Check if click is within our window using mouse location in screen coordinates
             if window.frame.contains(NSEvent.mouseLocation) {
-                self.handleMouseClicked()
+                self.handleMouseClicked(event: event)
                 return nil  // Consume the event
             }
             return event  // Pass through clicks outside our window
@@ -292,28 +332,24 @@ public final class OverlayWindowController: NSWindowController {
         }
     }
 
-    private func handleMouseMoved(_ windowLocation: NSPoint) {
-        guard let window = window else {
-            print("[Loupe] handleMouseMoved: no window")
+    private func handleMouseMoved(_ screenLocation: NSPoint) {
+        // screenLocation is already in screen coordinates (bottom-left origin)
+        // from NSEvent.mouseLocation - no window conversion needed
+
+        // Convert to AX coordinate system (flip Y using primary screen height)
+        guard let mainScreen = NSScreen.main else {
+            print("[Loupe] handleMouseMoved: no main screen")
             return
         }
 
-        // Convert window-local coordinates to screen coordinates
-        let screenPoint = window.convertPoint(toScreen: windowLocation)
-
-        // Convert to AX coordinate system (flip Y)
-        guard let screen = NSScreen.main else {
-            print("[Loupe] handleMouseMoved: no screen")
-            return
-        }
         let axPoint = CGPoint(
-            x: screenPoint.x,
-            y: screen.frame.height - screenPoint.y
+            x: screenLocation.x,
+            y: mainScreen.frame.height - screenLocation.y
         )
 
         // Query the accessibility element at this position
         inspector.updateElementAtPosition(axPoint)
-        print("[Loupe] handleMouseMoved at \(axPoint), element: \(inspector.currentElement?.role ?? "nil")")
+        print("[Loupe] handleMouseMoved at AX: \(axPoint), element: \(inspector.currentElement?.role ?? "nil")")
 
         // Update highlight frame using shared coordinate conversion
         if let element = inspector.currentElement {
@@ -329,41 +365,88 @@ public final class OverlayWindowController: NSWindowController {
         }
     }
 
-    private func handleMouseClicked() {
-        print("[Loupe] handleMouseClicked called")
-        print("[Loupe] currentElement: \(inspector.currentElement?.role ?? "nil")")
-        print("[Loupe] highlightFrame: \(overlayState.highlightFrame.map { String(describing: $0) } ?? "nil")")
-
+    private func handleMouseClicked(event: NSEvent? = nil) {
         guard let element = inspector.currentElement,
-              let highlightFrame = overlayState.highlightFrame,
-              let contentView = window?.contentView else {
-            print("[Loupe] handleMouseClicked: guard failed - missing element, frame, or contentView")
+              let window = window,
+              let container = containerView else {
             return
         }
 
-        // Create a positioning rect centered in the highlight
+        // Get click location from the event if available, otherwise use current mouse position
+        let clickInWindow: NSPoint
+        if let event = event {
+            clickInWindow = event.locationInWindow
+        } else {
+            let screenLocation = NSEvent.mouseLocation
+            clickInWindow = window.convertPoint(fromScreen: screenLocation)
+        }
+
+        // Convert window coordinates to container view coordinates
+        // The container is an unflipped NSView, so convert(_:from:) gives us
+        // coordinates in standard AppKit orientation (origin at bottom-left)
+        let clickInContainer = container.convert(clickInWindow, from: nil)
+
+        // Create positioning rect at the click point
         let positioningRect = NSRect(
-            x: highlightFrame.midX - 1,
-            y: highlightFrame.midY - 1,
+            x: clickInContainer.x - 1,
+            y: clickInContainer.y - 1,
             width: 2,
             height: 2
         )
 
+        // Smart edge selection based on screen position to avoid collisions:
+        // - Near top of screen: use .maxY (popover below, caret up) - plenty of room below
+        // - Near bottom of screen: use .minY (popover above, caret down) - plenty of room above
+        // - Near right edge: use .minX (popover left)
+        // - Default: use .maxX (popover right) - most reliable positioning
+        let clickInScreen = window.convertPoint(toScreen: clickInWindow)
+        let screenFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
+
+        let topThreshold = screenFrame.maxY - 150  // Near top of screen (within ~150px of menu bar)
+        let bottomThreshold = screenFrame.minY + 200  // Near bottom of screen
+        let rightThreshold = screenFrame.maxX - (screenFrame.width * 0.3)
+
+        let preferredEdge: NSRectEdge
+        let edgeName: String
+
+        if clickInScreen.y > topThreshold {
+            // Near top of screen - show popover below
+            preferredEdge = .maxY
+            edgeName = ".maxY (below)"
+        } else if clickInScreen.y < bottomThreshold {
+            // Near bottom of screen - show popover above
+            preferredEdge = .minY
+            edgeName = ".minY (above)"
+        } else if clickInScreen.x > rightThreshold {
+            // Near right edge - show popover to the left
+            preferredEdge = .minX
+            edgeName = ".minX (left)"
+        } else {
+            // Default - show popover to the right
+            preferredEdge = .maxX
+            edgeName = ".maxX (right)"
+        }
+
+        print("[Loupe] clickInScreen.y=\(clickInScreen.y), screenFrame.maxY=\(screenFrame.maxY), topThreshold=\(topThreshold), edge=\(edgeName)")
+
         popoverController.show(
             relativeTo: positioningRect,
-            of: contentView,
-            element: element
-        ) { [weak self] text in
-            guard let self = self else { return }
-            _ = self.annotationStore.addAnnotation(
-                text: text,
-                for: element,
-                windowTitle: self.inspector.getTargetWindowTitle(),
-                appName: self.targetApp.name,
-                bundleIdentifier: self.targetApp.bundleIdentifier
-            )
-            self.updateAnnotationBadges()
-        }
+            of: container,
+            preferredEdge: preferredEdge,
+            element: element,
+            onSave: { [weak self] text in
+                guard let self = self else { return }
+                _ = self.annotationStore.addAnnotation(
+                    text: text,
+                    for: element,
+                    windowTitle: self.inspector.getTargetWindowTitle(),
+                    appName: self.targetApp.name,
+                    bundleIdentifier: self.targetApp.bundleIdentifier
+                )
+                self.updateAnnotationBadges()
+            },
+            onDismiss: nil
+        )
     }
 
     // MARK: - Lifecycle
@@ -556,9 +639,11 @@ class MouseTrackingNSView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        let location = convert(event.locationInWindow, from: nil)
-        print("[Loupe] MouseTrackingNSView.mouseMoved at \(location)")
-        onMouseMoved?(location)
+        // Use NSEvent.mouseLocation for reliable screen coordinates
+        // This bypasses coordinate confusion from the NSHostingView hierarchy
+        let screenLocation = NSEvent.mouseLocation
+        print("[Loupe] MouseTrackingNSView.mouseMoved at screen: \(screenLocation)")
+        onMouseMoved?(screenLocation)
     }
 
     override func mouseDown(with event: NSEvent) {

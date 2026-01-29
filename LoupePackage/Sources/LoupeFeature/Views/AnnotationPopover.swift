@@ -84,16 +84,21 @@ struct AnnotationPopover: View {
 @MainActor
 final class AnnotationPopoverController {
     private var popover: NSPopover?
+    private var onDismissCallback: (() -> Void)?
 
     /// Show the annotation popover near a view
     func show(
         relativeTo positioningRect: NSRect,
         of positioningView: NSView,
+        preferredEdge: NSRectEdge = .maxY,
         element: AXElementInfo,
-        onSave: @escaping (String) -> Void
+        onSave: @escaping (String) -> Void,
+        onDismiss: (() -> Void)? = nil
     ) {
         // Dismiss any existing popover
         dismiss()
+
+        self.onDismissCallback = onDismiss
 
         let popover = NSPopover()
         popover.behavior = .transient
@@ -111,7 +116,7 @@ final class AnnotationPopoverController {
         )
 
         popover.contentViewController = NSHostingController(rootView: content)
-        popover.show(relativeTo: positioningRect, of: positioningView, preferredEdge: .maxY)
+        popover.show(relativeTo: positioningRect, of: positioningView, preferredEdge: preferredEdge)
 
         self.popover = popover
     }
@@ -120,5 +125,7 @@ final class AnnotationPopoverController {
     func dismiss() {
         popover?.close()
         popover = nil
+        onDismissCallback?()
+        onDismissCallback = nil
     }
 }
