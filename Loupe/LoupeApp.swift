@@ -3,15 +3,13 @@ import LoupeFeature
 
 @main
 struct LoupeApp: App {
-    @State private var coordinator = AppCoordinator()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        WindowGroup {
-            ContentView(coordinator: coordinator)
-        }
-        .commands {
-            // Remove the default New Window command since we only want one window
-            CommandGroup(replacing: .newItem) { }
+        // Empty Settings scene to satisfy SwiftUI App protocol
+        // The actual UI is managed by AppDelegate and FloatingToolbarWindowController
+        Settings {
+            EmptyView()
         }
     }
 }

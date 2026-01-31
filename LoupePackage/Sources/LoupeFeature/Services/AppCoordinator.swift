@@ -6,10 +6,17 @@ import SwiftUI
 @Observable
 public final class AppCoordinator {
 
+    // MARK: - UserDefaults Keys
+
+    private enum DefaultsKeys {
+        static let lastSelectedAppBundleID = "lastSelectedAppBundleID"
+        static let hasShownPermissionPanel = "hasShownPermissionPanel"
+    }
+
     // MARK: - Controllers
 
-    public let menuBarController = MenuBarController()
     public let floatingToolbar = FloatingToolbarWindowController()
+    private let permissionPanel = PermissionPanelController()
 
     // MARK: - Shared State
 
@@ -21,31 +28,25 @@ public final class AppCoordinator {
         didSet {
             if let app = selectedApp {
                 inspector.setTargetApp(app)
+                // Persist the selection
+                UserDefaults.standard.set(app.bundleIdentifier, forKey: DefaultsKeys.lastSelectedAppBundleID)
             } else {
                 inspector.clearTargetApp()
+                UserDefaults.standard.removeObject(forKey: DefaultsKeys.lastSelectedAppBundleID)
             }
-            // Reset inspection state when app changes
-            isInspecting = false
-        }
-    }
-
-    /// Whether inspection mode is active
-    public var isInspecting = false {
-        didSet {
-            guard isInspecting != oldValue else { return }
-
-            if isInspecting {
-                startInspection()
-            } else {
+            // Stop inspection when app changes (if currently inspecting)
+            if overlayController != nil {
                 stopInspection()
             }
 
-            // Update toolbar state
-            floatingToolbar.isInspecting = isInspecting
-
-            // Update menu bar icon
-            menuBarController.isInspecting = isInspecting
+            // Update toolbar with new app selection
+            floatingToolbar.updateSelectedApp(selectedApp)
         }
+    }
+
+    /// Whether inspection mode is active (derived from toolbar expanded state)
+    public var isInspecting: Bool {
+        floatingToolbar.isExpanded && overlayController != nil
     }
 
     /// The overlay controller (created when inspection starts)
@@ -65,14 +66,13 @@ public final class AppCoordinator {
     // MARK: - Setup
 
     private func setupCallbacks() {
-        // Menu bar click toggles floating toolbar visibility
-        menuBarController.onToggle = { [weak self] in
-            self?.floatingToolbar.toggleVisibility()
+        // Floating toolbar expand/collapse callbacks
+        floatingToolbar.onExpand = { [weak self] in
+            self?.startInspection()
         }
 
-        // Floating toolbar callbacks
-        floatingToolbar.onInspectionToggle = { [weak self] inspecting in
-            self?.isInspecting = inspecting
+        floatingToolbar.onCollapse = { [weak self] in
+            self?.stopInspectionAndReleaseFocus()
         }
 
         floatingToolbar.onCopyFeedback = { [weak self] in
@@ -83,16 +83,25 @@ public final class AppCoordinator {
             self?.clearAnnotations()
         }
 
-        floatingToolbar.onClose = { [weak self] in
-            self?.isInspecting = false
+        floatingToolbar.onAppSelected = { [weak self] app in
+            self?.selectedApp = app
+        }
+
+        floatingToolbar.onRefreshApps = { [weak self] in
+            self?.refreshApps()
         }
     }
 
     // MARK: - Inspection Control
 
     private func startInspection() {
-        guard let app = selectedApp else { return }
+        guard let app = selectedApp else {
+            // No app selected - collapse toolbar back
+            floatingToolbar.isExpanded = false
+            return
+        }
 
+        // Create overlay (Loupe stays active and owns focus)
         let controller = OverlayWindowController(
             inspector: inspector,
             targetApp: app
@@ -109,6 +118,18 @@ public final class AppCoordinator {
         overlayController?.isInspectionActive = false
         overlayController?.close()
         overlayController = nil
+    }
+
+    /// Stop inspection and release focus to the target app.
+    /// Called when user collapses the toolbar (exits inspection mode).
+    private func stopInspectionAndReleaseFocus() {
+        stopInspection()
+
+        // NOW release focus to target app
+        if let app = selectedApp,
+           let runningApp = NSRunningApplication(processIdentifier: app.id) {
+            runningApp.activate(options: [])
+        }
     }
 
     // MARK: - Actions
@@ -143,5 +164,55 @@ public final class AppCoordinator {
     /// Refresh running apps list
     public func refreshApps() {
         inspector.refreshRunningApps()
+        // Update toolbar with the new app list
+        floatingToolbar.updateAvailableApps(inspector.runningApps)
+    }
+
+    // MARK: - App Lifecycle (called from AppDelegate)
+
+    /// Show the permission panel for first-time setup
+    public func showPermissionPanel() {
+        permissionPanel.show { [weak self] in
+            self?.startApp()
+        }
+    }
+
+    /// Start the app after permission is granted
+    public func startApp() {
+        // Refresh apps and restore last selection
+        refreshApps()
+        restoreLastSelectedApp()
+
+        // Show the floating toolbar
+        showToolbar()
+
+        // Update toolbar with initial state
+        floatingToolbar.updateAvailableApps(inspector.runningApps)
+        floatingToolbar.updateSelectedApp(selectedApp)
+    }
+
+    /// Restore the previously selected app if it's still running
+    private func restoreLastSelectedApp() {
+        guard let lastBundleID = UserDefaults.standard.string(forKey: DefaultsKeys.lastSelectedAppBundleID) else {
+            return
+        }
+
+        // Find the app in running apps
+        if let matchingApp = inspector.runningApps.first(where: { $0.bundleIdentifier == lastBundleID }) {
+            selectedApp = matchingApp
+        }
+    }
+
+    /// Ensure toolbar is visible (called when app becomes active)
+    public func ensureToolbarVisible() {
+        if !floatingToolbar.isVisible {
+            floatingToolbar.show()
+        }
+    }
+
+    /// Cleanup before app terminates
+    public func cleanup() {
+        stopInspection()
+        permissionPanel.dismiss()
     }
 }

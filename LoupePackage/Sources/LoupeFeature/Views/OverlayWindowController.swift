@@ -18,6 +18,8 @@ private class OverlayWindow: NSWindow {
 @Observable
 class OverlayState {
     var highlightFrame: CGRect?
+    /// The index of the badge currently being hovered (nil if none)
+    var hoveredBadgeIndex: Int?
 }
 
 /// Controller for the transparent overlay window that draws element highlights
@@ -36,8 +38,6 @@ public final class OverlayWindowController: NSWindowController {
     public var isInspectionActive = false {
         didSet {
             guard isInspectionActive != oldValue else { return }
-            print("[Loupe] isInspectionActive changed to: \(isInspectionActive)")
-            print("[Loupe] Setting window.ignoresMouseEvents to: \(!isInspectionActive)")
             window?.ignoresMouseEvents = !isInspectionActive
 
             if isInspectionActive {
@@ -68,6 +68,10 @@ public final class OverlayWindowController: NSWindowController {
 
     /// Controller for floating element label
     private let elementLabelController = ElementLabelWindowController()
+
+    /// Tracks whether the annotation popover is currently active (modal state)
+    /// When true, hover highlighting and click-to-inspect are blocked
+    private var isPopoverActive = false
 
     /// Container view that wraps NSHostingView (unflipped, for correct popover positioning)
     private var containerView: NSView?
@@ -112,6 +116,7 @@ public final class OverlayWindowController: NSWindowController {
             annotationBadges: { [weak self] in self?.annotationBadges ?? [] },
             onMouseMoved: { [weak self] location in self?.handleMouseMoved(location) },
             onMouseClicked: { [weak self] in self?.handleMouseClicked() },
+            onBadgeDelete: { [weak self] badgeId in self?.deleteAnnotation(id: badgeId) },
             onEscape: { [weak self] in self?.close() }
         )
 
@@ -203,7 +208,15 @@ public final class OverlayWindowController: NSWindowController {
                     self?.window?.orderFront(nil)
                     self?.updateWindowFrame()
                 }
-            } else if app.processIdentifier != loupePid {
+            } else if app.processIdentifier == loupePid {
+                // Loupe itself became active - clear highlights but keep overlay window visible
+                // This prevents highlighting Loupe's own UI elements while allowing
+                // users to interact with Loupe's main window
+                Task { @MainActor in
+                    self?.overlayState.highlightFrame = nil
+                    self?.elementLabelController.hide()
+                }
+            } else {
                 // Some other app (not target, not Loupe) became active - hide everything
                 Task { @MainActor in
                     self?.overlayState.highlightFrame = nil
@@ -212,7 +225,6 @@ public final class OverlayWindowController: NSWindowController {
                     self?.window?.orderOut(nil)
                 }
             }
-            // If Loupe itself became active (e.g., clicking popover), keep overlay visible
         }
         workspaceObservers.append(activateObserver)
     }
@@ -297,9 +309,11 @@ public final class OverlayWindowController: NSWindowController {
             )
 
             return AnnotationBadge(
+                id: annotation.id,
                 number: annotation.badgeNumber,
                 position: badgePosition,
-                text: annotation.text
+                text: annotation.text,
+                elementName: annotation.displayLabel
             )
         }
     }
@@ -313,6 +327,12 @@ public final class OverlayWindowController: NSWindowController {
             guard let self = self,
                   let window = self.window,
                   self.isInspectionActive else {
+                return event
+            }
+
+            // When popover is active, don't consume clicks - let them reach the popover panel
+            // (The popover's own click monitor handles click-outside behavior)
+            guard !self.isPopoverActive else {
                 return event
             }
 
@@ -334,6 +354,9 @@ public final class OverlayWindowController: NSWindowController {
     }
 
     private func handleMouseMoved(_ screenLocation: NSPoint) {
+        // Block hover highlighting while popover is active (modal state)
+        guard !isPopoverActive else { return }
+
         // screenLocation is already in screen coordinates (bottom-left origin)
         // from NSEvent.mouseLocation - no window conversion needed
 
@@ -343,6 +366,29 @@ public final class OverlayWindowController: NSWindowController {
 
         if !window.frame.contains(screenLocation) {
             // Mouse is outside the target app's window - clear highlight
+            overlayState.highlightFrame = nil
+            overlayState.hoveredBadgeIndex = nil
+            elementLabelController.hide()
+            return
+        }
+
+        // Convert screen location to local coordinates for badge hit testing
+        let localLocation = convertScreenToLocal(screenLocation)
+
+        // Check if hovering over any badge
+        overlayState.hoveredBadgeIndex = nil
+
+        if let localPoint = localLocation {
+            for (index, badge) in annotationBadges.enumerated() {
+                if badge.hitTestRect.contains(localPoint) {
+                    overlayState.hoveredBadgeIndex = index
+                    break
+                }
+            }
+        }
+
+        // If hovering over a badge, don't show element highlight
+        if overlayState.hoveredBadgeIndex != nil {
             overlayState.highlightFrame = nil
             elementLabelController.hide()
             return
@@ -361,7 +407,6 @@ public final class OverlayWindowController: NSWindowController {
 
         // Query the accessibility element at this position
         inspector.updateElementAtPosition(axPoint)
-        print("[Loupe] handleMouseMoved at AX: \(axPoint), element: \(inspector.currentElement?.role ?? "nil")")
 
         // Update highlight frame using shared coordinate conversion
         if let element = inspector.currentElement {
@@ -377,7 +422,31 @@ public final class OverlayWindowController: NSWindowController {
         }
     }
 
+    /// Convert screen coordinates (AppKit, bottom-left origin) to local overlay coordinates (top-left origin)
+    private func convertScreenToLocal(_ screenPoint: NSPoint) -> CGPoint? {
+        guard let window = window else { return nil }
+
+        // First convert screen to window coordinates
+        let windowPoint = window.convertPoint(fromScreen: screenPoint)
+
+        // Window uses bottom-left origin, but our local coordinates use top-left origin
+        // to match the SwiftUI Canvas coordinate system
+        let windowHeight = window.frame.height
+        return CGPoint(x: windowPoint.x, y: windowHeight - windowPoint.y)
+    }
+
+    /// Delete an annotation by ID
+    private func deleteAnnotation(id: UUID) {
+        annotationStore.removeAnnotation(id: id)
+        updateAnnotationBadges()
+        overlayState.hoveredBadgeIndex = nil
+    }
+
     private func handleMouseClicked(event: NSEvent? = nil) {
+        // Block new clicks while popover is active (modal state)
+        // The popover's click monitor handles clicks and shows wiggle animation
+        guard !isPopoverActive else { return }
+
         guard let element = inspector.currentElement,
               let window = window else {
             return
@@ -427,6 +496,9 @@ public final class OverlayWindowController: NSWindowController {
 
         print("[Loupe] clickInScreen.y=\(clickInScreen.y), screenFrame.maxY=\(screenFrame.maxY), topThreshold=\(topThreshold), edge=\(edgeName)")
 
+        // Enter modal state before showing popover
+        isPopoverActive = true
+
         popoverController.show(
             at: clickInScreen,
             preferredEdge: preferredEdge,
@@ -442,7 +514,15 @@ public final class OverlayWindowController: NSWindowController {
                 )
                 self.updateAnnotationBadges()
             },
-            onDismiss: nil
+            onDismiss: { [weak self] in
+                guard let self = self else { return }
+                // Exit modal state when popover closes
+                self.isPopoverActive = false
+
+                // Don't activate target app here - Loupe should retain focus
+                // for the entire inspection session. Focus is only released
+                // when the user collapses the toolbar (exits inspection mode).
+            }
         )
     }
 
@@ -479,10 +559,12 @@ struct OverlayView: View {
     let annotationBadges: () -> [AnnotationBadge]
     let onMouseMoved: (NSPoint) -> Void
     let onMouseClicked: () -> Void
+    let onBadgeDelete: (UUID) -> Void
     let onEscape: () -> Void
 
     private let badgeSize: CGFloat = 20
     private let badgeColor = Color.blue
+    private let deleteColor = Color.red
 
     var body: some View {
         GeometryReader { geometry in
@@ -535,8 +617,21 @@ struct OverlayView: View {
                     }
 
                     // Draw annotation badges
-                    for badge in annotationBadges() {
-                        drawBadge(context: context, badge: badge)
+                    let badges = annotationBadges()
+                    for (index, badge) in badges.enumerated() {
+                        let isHovered = overlayState.hoveredBadgeIndex == index
+                        drawBadge(context: context, badge: badge, isHovered: isHovered)
+                    }
+                }
+
+                // Overlay SwiftUI buttons for hovered badge tooltips
+                // This provides proper tooltip and click handling that Canvas can't do
+                ForEach(Array(annotationBadges().enumerated()), id: \.element.id) { index, badge in
+                    if overlayState.hoveredBadgeIndex == index {
+                        BadgeDeleteButton(badge: badge) {
+                            onBadgeDelete(badge.id)
+                        }
+                        .position(badge.position)
                     }
                 }
             }
@@ -548,7 +643,7 @@ struct OverlayView: View {
         }
     }
 
-    private func drawBadge(context: GraphicsContext, badge: AnnotationBadge) {
+    private func drawBadge(context: GraphicsContext, badge: AnnotationBadge, isHovered: Bool) {
         let badgeRect = CGRect(
             x: badge.position.x - badgeSize / 2,
             y: badge.position.y - badgeSize / 2,
@@ -556,23 +651,54 @@ struct OverlayView: View {
             height: badgeSize
         )
 
-        // Draw circle background
+        // Draw circle background (red when hovered for delete)
         let circlePath = Path(ellipseIn: badgeRect)
-        context.fill(circlePath, with: .color(badgeColor))
+        context.fill(circlePath, with: .color(isHovered ? deleteColor : badgeColor))
 
         // Draw white border for visibility
         context.stroke(circlePath, with: .color(.white), lineWidth: 2)
 
-        // Draw number text
-        let numberText = Text("\(badge.number)")
-            .font(.system(size: 12, weight: .bold))
-            .foregroundColor(.white)
+        if isHovered {
+            // Draw X icon when hovered
+            let xSize: CGFloat = 8
+            let center = badge.position
 
-        context.draw(
-            context.resolve(numberText),
-            at: badge.position,
-            anchor: .center
-        )
+            var xPath = Path()
+            xPath.move(to: CGPoint(x: center.x - xSize/2, y: center.y - xSize/2))
+            xPath.addLine(to: CGPoint(x: center.x + xSize/2, y: center.y + xSize/2))
+            xPath.move(to: CGPoint(x: center.x + xSize/2, y: center.y - xSize/2))
+            xPath.addLine(to: CGPoint(x: center.x - xSize/2, y: center.y + xSize/2))
+
+            context.stroke(xPath, with: .color(.white), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+        } else {
+            // Draw number text
+            let numberText = Text("\(badge.number)")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(.white)
+
+            context.draw(
+                context.resolve(numberText),
+                at: badge.position,
+                anchor: .center
+            )
+        }
+    }
+}
+
+// MARK: - Badge Delete Button (for hover tooltip and click handling)
+
+private struct BadgeDeleteButton: View {
+    let badge: AnnotationBadge
+    let onDelete: () -> Void
+
+    var body: some View {
+        Button(action: onDelete) {
+            Color.clear
+                .frame(width: 24, height: 24)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("\(badge.elementName)\n\(badge.text)\n\nClick to delete")
     }
 }
 
@@ -639,12 +765,10 @@ class MouseTrackingNSView: NSView {
         // Use NSEvent.mouseLocation for reliable screen coordinates
         // This bypasses coordinate confusion from the NSHostingView hierarchy
         let screenLocation = NSEvent.mouseLocation
-        print("[Loupe] MouseTrackingNSView.mouseMoved at screen: \(screenLocation)")
         onMouseMoved?(screenLocation)
     }
 
     override func mouseDown(with event: NSEvent) {
-        print("[Loupe] MouseTrackingNSView.mouseDown")
         onMouseClicked?()
     }
 
@@ -672,7 +796,20 @@ private final class DisplayLinkContext {
 
 /// Represents an annotation badge position in overlay-local coordinates for rendering
 struct AnnotationBadge {
+    let id: UUID
     let number: Int
     let position: CGPoint
     let text: String
+    let elementName: String
+
+    /// The hit test rect for this badge (used for hover detection)
+    var hitTestRect: CGRect {
+        let size: CGFloat = 20
+        return CGRect(
+            x: position.x - size / 2,
+            y: position.y - size / 2,
+            width: size,
+            height: size
+        )
+    }
 }

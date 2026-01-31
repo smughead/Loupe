@@ -1,36 +1,63 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Controller for the floating toolbar window
+///
+/// Architecture: This controller manages a floating toolbar that can expand/collapse.
+/// The key challenge is coordinating NSWindow frame changes with SwiftUI content sizing.
+///
+/// Solution: We observe window frame changes (caused by SwiftUI's intrinsic sizing)
+/// and adjust the window origin to keep the RIGHT edge anchored. This creates the
+/// effect of the toolbar growing leftward when expanding.
 @MainActor
 public final class FloatingToolbarWindowController: NSWindowController, ObservableObject {
 
     // MARK: - Published State
 
-    @Published public var isExpanded = true
-    @Published public var isInspecting = false
+    @Published public var isExpanded = false
+    @Published public var showCopySuccess = false
+
+    // MARK: - App Selection State
+
+    @Published public var selectedApp: TargetApp?
+    @Published public var availableApps: [TargetApp] = []
 
     // MARK: - Callbacks
 
-    public var onInspectionToggle: ((Bool) -> Void)?
+    /// Called when toolbar expands (starts inspection)
+    public var onExpand: (() -> Void)?
+    /// Called when toolbar collapses (stops inspection, releases focus)
+    public var onCollapse: (() -> Void)?
     public var onCopyFeedback: (() -> Void)?
     public var onClearAnnotations: (() -> Void)?
-    public var onClose: (() -> Void)?
+    public var onAppSelected: ((TargetApp?) -> Void)?
+    public var onRefreshApps: (() -> Void)?
 
     // MARK: - Private State
 
-    private var annotationStore: AnnotationStore?
+    var annotationStore: AnnotationStore?
     private var hostingView: NSHostingView<AnyView>?
+    private var cancellables = Set<AnyCancellable>()
+    private var frameObserver: NSObjectProtocol?
 
-    // Window sizes
-    private let expandedSize = NSSize(width: 320, height: 60)
-    private let collapsedSize = NSSize(width: 64, height: 64)
+    /// Tracks the right edge position to anchor during resize
+    private var anchoredRightEdge: CGFloat?
+
+    /// Published annotation count for reactive updates
+    @Published private(set) var annotationCount: Int = 0
+
+    /// Whether the toolbar window is currently visible
+    public var isVisible: Bool {
+        window?.isVisible ?? false
+    }
 
     // MARK: - Initialization
 
     public init() {
+        // Create window - size will be determined by SwiftUI content
         let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: NSSize(width: 320, height: 60)),
+            contentRect: NSRect(origin: .zero, size: NSSize(width: 64, height: 64)),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -46,6 +73,7 @@ public final class FloatingToolbarWindowController: NSWindowController, Observab
         super.init(window: window)
 
         setupContent()
+        setupObservers()
         positionWindow()
     }
 
@@ -53,100 +81,145 @@ public final class FloatingToolbarWindowController: NSWindowController, Observab
         fatalError("init(coder:) has not been implemented")
     }
 
+    nonisolated deinit {
+        // NotificationCenter observers are automatically removed when the object is deallocated
+        // with block-based addObserver, so no manual cleanup needed
+    }
+
     // MARK: - Configuration
 
     /// Set the annotation store to observe for badge counts
     public func setAnnotationStore(_ store: AnnotationStore) {
         self.annotationStore = store
-        updateContent()
+        self.annotationCount = store.annotations.count
+
+        // Observe annotation changes via Combine
+        store.$annotations
+            .map(\.count)
+            .receive(on: RunLoop.main)
+            .assign(to: &$annotationCount)
     }
 
     // MARK: - Setup
 
     private func setupContent() {
-        updateContent()
-    }
-
-    private func updateContent() {
-        let annotationCount = annotationStore?.annotations.count ?? 0
-
-        let toolbarView = FloatingToolbarView(
-            isExpanded: Binding(
-                get: { [weak self] in self?.isExpanded ?? true },
-                set: { [weak self] newValue in
-                    self?.isExpanded = newValue
-                    self?.updateWindowSize()
-                }
-            ),
-            isInspecting: Binding(
-                get: { [weak self] in self?.isInspecting ?? false },
-                set: { [weak self] newValue in
-                    self?.isInspecting = newValue
-                    self?.onInspectionToggle?(newValue)
-                }
-            ),
-            annotationCount: annotationCount,
-            onCopyFeedback: { [weak self] in
-                self?.onCopyFeedback?()
-            },
-            onClearAnnotations: { [weak self] in
-                self?.onClearAnnotations?()
-            },
-            onClose: { [weak self] in
-                self?.onClose?()
-                self?.close()
-            }
-        )
+        let toolbarView = FloatingToolbarHostView(controller: self)
 
         let hosting = NSHostingView(rootView: AnyView(toolbarView))
-        hosting.frame = window?.contentView?.bounds ?? NSRect.zero
+        hosting.frame = window?.contentView?.bounds ?? .zero
         hosting.autoresizingMask = [.width, .height]
 
+        // Let SwiftUI size the window naturally
         window?.contentView = hosting
         hostingView = hosting
     }
 
-    private func updateWindowSize() {
-        guard let window = window, let screen = NSScreen.main else { return }
+    private func setupObservers() {
+        // Observe isExpanded changes to trigger inspection callbacks
+        // and capture the anchor point BEFORE SwiftUI resizes the window
+        $isExpanded
+            .dropFirst() // Skip initial value
+            .sink { [weak self] expanded in
+                guard let self = self, let window = self.window else { return }
+                // Capture current right edge BEFORE the resize happens
+                self.anchoredRightEdge = window.frame.maxX
+                self.handleExpandedChange(expanded)
+            }
+            .store(in: &cancellables)
 
-        let targetSize = isExpanded ? expandedSize : collapsedSize
-        let screenFrame = screen.visibleFrame
-
-        // Keep bottom-right position
-        let newOrigin = NSPoint(
-            x: screenFrame.maxX - targetSize.width - 20,
-            y: screenFrame.minY + 20
-        )
-
-        let newFrame = NSRect(origin: newOrigin, size: targetSize)
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.2
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            window.animator().setFrame(newFrame, display: true)
+        // Observe window frame changes to adjust origin (keep right edge anchored)
+        frameObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResizeNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleWindowResize()
         }
+    }
+
+    private func handleExpandedChange(_ expanded: Bool) {
+        if expanded {
+            onExpand?()
+        } else {
+            onCollapse?()
+        }
+    }
+
+    /// Called when window resizes (triggered by SwiftUI content change).
+    /// Adjusts the window origin to keep the right edge anchored.
+    private func handleWindowResize() {
+        guard let window = window,
+              let anchoredRightEdge = anchoredRightEdge else { return }
+
+        let currentFrame = window.frame
+
+        // Calculate where origin should be to keep right edge anchored
+        let targetOriginX = anchoredRightEdge - currentFrame.width
+
+        // Only adjust if there's a meaningful difference
+        if abs(currentFrame.origin.x - targetOriginX) > 1 {
+            var newFrame = currentFrame
+            newFrame.origin.x = targetOriginX
+
+            // Ensure window stays on screen
+            if let screen = window.screen ?? NSScreen.main {
+                let screenFrame = screen.visibleFrame
+                let padding: CGFloat = 20
+
+                // Don't let left edge go off screen
+                if newFrame.origin.x < screenFrame.minX + padding {
+                    newFrame.origin.x = screenFrame.minX + padding
+                }
+
+                // Don't let right edge go off screen
+                if newFrame.maxX > screenFrame.maxX - padding {
+                    newFrame.origin.x = screenFrame.maxX - newFrame.width - padding
+                }
+            }
+
+            window.setFrame(newFrame, display: false)
+        }
+
+        // Clear the anchor after handling
+        self.anchoredRightEdge = nil
     }
 
     private func positionWindow() {
         guard let window = window, let screen = NSScreen.main else { return }
 
-        let screenFrame = screen.visibleFrame
-        let size = isExpanded ? expandedSize : collapsedSize
+        // Wait briefly for SwiftUI to lay out content and determine size
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let window = self.window else { return }
 
-        // Position at bottom-right with padding
-        let origin = NSPoint(
-            x: screenFrame.maxX - size.width - 20,
-            y: screenFrame.minY + 20
-        )
+            let screenFrame = screen.visibleFrame
+            let size = window.frame.size  // Use actual size from SwiftUI content
 
-        window.setFrame(NSRect(origin: origin, size: size), display: true)
+            // Position at bottom-right with padding
+            let origin = NSPoint(
+                x: screenFrame.maxX - size.width - 20,
+                y: screenFrame.minY + 20
+            )
+
+            window.setFrame(NSRect(origin: origin, size: size), display: true)
+        }
     }
 
     // MARK: - Public Methods
 
     /// Refresh the toolbar content (call when annotation count changes)
+    /// Note: With reactive SwiftUI binding, this is now a no-op but kept for API compatibility
     public func refreshContent() {
-        updateContent()
+        // No longer needed - SwiftUI observes changes automatically
+    }
+
+    /// Update the list of available apps
+    public func updateAvailableApps(_ apps: [TargetApp]) {
+        availableApps = apps
+    }
+
+    /// Update the currently selected app
+    public func updateSelectedApp(_ app: TargetApp?) {
+        selectedApp = app
     }
 
     /// Show the toolbar window
@@ -167,5 +240,46 @@ public final class FloatingToolbarWindowController: NSWindowController, Observab
         } else {
             show()
         }
+    }
+}
+
+// MARK: - SwiftUI Host View
+
+/// A SwiftUI wrapper that observes the controller and renders the toolbar
+/// This allows proper reactive updates when @Published properties change
+private struct FloatingToolbarHostView: View {
+    @ObservedObject var controller: FloatingToolbarWindowController
+
+    var body: some View {
+        FloatingToolbarView(
+            isExpanded: Binding(
+                get: { controller.isExpanded },
+                set: { controller.isExpanded = $0 }
+            ),
+            selectedApp: Binding(
+                get: { controller.selectedApp },
+                set: {
+                    controller.selectedApp = $0
+                    controller.onAppSelected?($0)
+                }
+            ),
+            availableApps: controller.availableApps,
+            showCopySuccess: controller.showCopySuccess,
+            annotationCount: controller.annotationCount,
+            onCopyFeedback: {
+                controller.onCopyFeedback?()
+                controller.showCopySuccess = true
+                // Reset after delay
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    controller.showCopySuccess = false
+                }
+            },
+            onClearAnnotations: {
+                controller.onClearAnnotations?()
+            },
+            onRefreshApps: {
+                controller.onRefreshApps?()
+            }
+        )
     }
 }

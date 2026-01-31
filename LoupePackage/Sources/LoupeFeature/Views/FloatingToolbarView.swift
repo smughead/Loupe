@@ -1,28 +1,70 @@
 import SwiftUI
 
+// MARK: - Liquid Glass Background
+
+extension View {
+    /// Applies Apple's liquid glass effect on macOS 26+, falling back to ultraThinMaterial on earlier versions
+    @ViewBuilder
+    func loupeGlassBackground(cornerRadius: CGFloat = 12) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.regular.tint(.clear), in: RoundedRectangle(cornerRadius: cornerRadius))
+        } else {
+            self.background(
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .fill(.ultraThinMaterial)
+                    .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: 4)
+            )
+        }
+    }
+
+    /// Circle variant for collapsed state
+    @ViewBuilder
+    func loupeGlassCircle() -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.regular.tint(.clear), in: Circle())
+        } else {
+            self.background(
+                Circle()
+                    .fill(.ultraThinMaterial)
+                    .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
+            )
+        }
+    }
+}
+
 /// Floating toolbar for controlling inspection and managing annotations
+///
+/// Mental model:
+/// - Collapsed = inspection OFF, target app has focus
+/// - Expanded = inspection ON, Loupe owns focus
 public struct FloatingToolbarView: View {
     @Binding var isExpanded: Bool
-    @Binding var isInspecting: Bool
+    @Binding var selectedApp: TargetApp?
+    let availableApps: [TargetApp]
+    let showCopySuccess: Bool
     let annotationCount: Int
     let onCopyFeedback: () -> Void
     let onClearAnnotations: () -> Void
-    let onClose: () -> Void
+    let onRefreshApps: () -> Void
 
     public init(
         isExpanded: Binding<Bool>,
-        isInspecting: Binding<Bool>,
+        selectedApp: Binding<TargetApp?>,
+        availableApps: [TargetApp],
+        showCopySuccess: Bool,
         annotationCount: Int,
         onCopyFeedback: @escaping () -> Void,
         onClearAnnotations: @escaping () -> Void,
-        onClose: @escaping () -> Void
+        onRefreshApps: @escaping () -> Void
     ) {
         self._isExpanded = isExpanded
-        self._isInspecting = isInspecting
+        self._selectedApp = selectedApp
+        self.availableApps = availableApps
+        self.showCopySuccess = showCopySuccess
         self.annotationCount = annotationCount
         self.onCopyFeedback = onCopyFeedback
         self.onClearAnnotations = onClearAnnotations
-        self.onClose = onClose
+        self.onRefreshApps = onRefreshApps
     }
 
     public var body: some View {
@@ -43,14 +85,9 @@ public struct FloatingToolbarView: View {
             isExpanded = true
         } label: {
             ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .frame(width: 48, height: 48)
-                    .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
-
                 Image(systemName: "eye.circle.fill")
                     .font(.system(size: 24))
-                    .foregroundStyle(isInspecting ? .blue : .secondary)
+                    .foregroundStyle(.secondary)
 
                 // Badge for annotation count
                 if annotationCount > 0 {
@@ -63,35 +100,37 @@ public struct FloatingToolbarView: View {
                         .offset(x: 16, y: -16)
                 }
             }
+            .frame(width: 48, height: 48)
+            .loupeGlassCircle()
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button("Quit Loupe") {
+                NSApplication.shared.terminate(nil)
+            }
+        }
     }
 
     // MARK: - Expanded State
 
     private var expandedToolbar: some View {
         HStack(spacing: 8) {
-            // Play/Pause toggle
-            ToolbarButton(
-                icon: isInspecting ? "pause.fill" : "play.fill",
-                label: isInspecting ? "Pause" : "Inspect",
-                isActive: isInspecting
-            ) {
-                isInspecting.toggle()
-            }
+            // App icon picker
+            AppIconPicker(
+                selectedApp: $selectedApp,
+                availableApps: availableApps,
+                onRefresh: onRefreshApps
+            )
 
             Divider()
                 .frame(height: 24)
 
-            // Copy feedback
-            ToolbarButton(
-                icon: "doc.on.clipboard",
-                label: "Copy",
-                isActive: false,
-                isDisabled: annotationCount == 0
-            ) {
-                onCopyFeedback()
-            }
+            // Copy feedback (with success animation)
+            CopyButton(
+                showSuccess: showCopySuccess,
+                isDisabled: annotationCount == 0,
+                action: onCopyFeedback
+            )
 
             // Clear annotations
             ToolbarButton(
@@ -103,34 +142,69 @@ public struct FloatingToolbarView: View {
                 onClearAnnotations()
             }
 
+            // Settings (placeholder, disabled)
+            ToolbarButton(
+                icon: "gearshape",
+                label: "Settings",
+                isActive: false,
+                isDisabled: true
+            ) {
+                // Placeholder - no action yet
+            }
+
             Divider()
                 .frame(height: 24)
 
-            // Minimize
+            // Exit (collapse toolbar and stop inspection)
             ToolbarButton(
-                icon: "minus",
-                label: "Min",
+                icon: "xmark",
+                label: "Exit",
                 isActive: false
             ) {
                 isExpanded = false
             }
-
-            // Close
-            ToolbarButton(
-                icon: "xmark",
-                label: "Close",
-                isActive: false
-            ) {
-                onClose()
-            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.2), radius: 8, x: 0, y: 4)
-        )
+        .loupeGlassBackground(cornerRadius: 12)
+    }
+}
+
+// MARK: - Copy Button with Success Animation
+
+private struct CopyButton: View {
+    let showSuccess: Bool
+    let isDisabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                ZStack {
+                    // Clipboard icon (fades out on success)
+                    Image(systemName: "doc.on.clipboard")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(isDisabled ? .gray : .primary)
+                        .opacity(showSuccess ? 0 : 1)
+
+                    // Checkmark icon (fades in on success)
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.green)
+                        .opacity(showSuccess ? 1 : 0)
+                        .scaleEffect(showSuccess ? 1.0 : 0.5)
+                }
+                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: showSuccess)
+
+                Text(showSuccess ? "Copied!" : "Copy")
+                    .font(.system(size: 9))
+                    .foregroundColor(showSuccess ? .green : .secondary)
+                    .opacity(isDisabled && !showSuccess ? 0.5 : 1.0)
+            }
+            .frame(width: 40, height: 36)
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
     }
 }
 

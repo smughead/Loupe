@@ -98,6 +98,7 @@ private class PopoverPanel: NSPanel {
 final class AnnotationPopoverController {
     private var panel: NSPanel?
     private var clickMonitor: Any?
+    private var keyMonitor: Any?
     private var onDismissCallback: (() -> Void)?
 
     /// Spacing between click point and panel edge
@@ -115,6 +116,10 @@ final class AnnotationPopoverController {
         dismiss(animated: false)
 
         self.onDismissCallback = onDismiss
+
+        // Note: Glassmorphism dim overlay removed - NSVisualEffectView with .behindWindow
+        // covering all screens causes WindowServer hangs. The modal behavior (wiggle on
+        // click-outside, Escape to dismiss) works without the visual dim effect.
 
         // Create the SwiftUI content
         let content = AnnotationPopover(
@@ -139,10 +144,10 @@ final class AnnotationPopoverController {
             preferredEdge: preferredEdge
         )
 
-        // Create the panel
+        // Create the panel (without .nonactivatingPanel so it can receive keyboard focus)
         let panel = PopoverPanel(
             contentRect: NSRect(origin: panelOrigin, size: contentSize),
-            styleMask: [.borderless, .nonactivatingPanel],
+            styleMask: .borderless,
             backing: .buffered,
             defer: false
         )
@@ -152,6 +157,7 @@ final class AnnotationPopoverController {
         panel.level = .popUpMenu
         panel.hasShadow = true
         panel.contentViewController = hostingController
+        panel.isFloatingPanel = true  // Stay above other windows
 
         // Style the content view with rounded corners and background
         if let contentView = panel.contentView {
@@ -175,11 +181,18 @@ final class AnnotationPopoverController {
             layer.transform = CATransform3DMakeScale(0.95, 0.95, 1.0)
         }
 
-        // Show the panel
-        panel.orderFront(nil)
-        panel.makeKey()
-
         self.panel = panel
+
+        // Activate Loupe app and show panel with focus
+        // Use makeKeyAndOrderFront for more reliable focus handling
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+
+        // Ensure the panel's content view becomes first responder
+        // This helps with subsequent popover shows when Loupe is already active
+        if let contentView = panel.contentView {
+            panel.makeFirstResponder(contentView)
+        }
 
         // Animate in with scale + fade
         NSAnimationContext.runAnimationGroup { context in
@@ -201,8 +214,9 @@ final class AnnotationPopoverController {
             layer.transform = CATransform3DIdentity
         }
 
-        // Install click-outside monitor to dismiss
+        // Install event monitors
         installClickOutsideMonitor()
+        installKeyboardMonitor()
     }
 
     /// Calculate where to position the panel origin based on the click point and preferred edge
@@ -257,7 +271,7 @@ final class AnnotationPopoverController {
         return origin
     }
 
-    /// Install event monitor to dismiss when clicking outside the panel
+    /// Install event monitor to show wiggle animation when clicking outside the panel (modal behavior)
     private func installClickOutsideMonitor() {
         clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self = self, let panel = self.panel else { return event }
@@ -265,9 +279,13 @@ final class AnnotationPopoverController {
             // Check if click is outside the panel
             let clickLocation = NSEvent.mouseLocation
             if !panel.frame.contains(clickLocation) {
-                self.dismiss()
+                // Wiggle the popover to indicate it's modal - user must complete/cancel the annotation
+                self.wiggle()
+                // Consume the event to prevent it from reaching the overlay controller
+                return nil
             }
 
+            // Let clicks inside the panel through normally
             return event
         }
     }
@@ -280,10 +298,57 @@ final class AnnotationPopoverController {
         }
     }
 
+    /// Install keyboard event monitor for Escape key
+    private func installKeyboardMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self else { return event }
+
+            // Check for Escape key (keyCode 53)
+            if event.keyCode == 53 {
+                self.dismiss()
+                return nil  // Consume the event
+            }
+
+            return event
+        }
+    }
+
+    /// Remove the keyboard monitor
+    private func removeKeyboardMonitor() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+    }
+
+    /// Animate a "wiggle" shake to indicate the popover is modal and cannot be dismissed by clicking outside
+    private func wiggle() {
+        guard let panel = panel else { return }
+
+        // Use the panel's frame for the wiggle animation
+        let originalFrame = panel.frame
+
+        // Apply animation by adjusting the window frame directly with timed offsets
+        let shakeOffsets: [CGFloat] = [-8, 8, -6, 6, -3, 3, 0]
+        let interval: UInt64 = 57_000_000  // ~57ms per step (0.4s / 7 steps)
+
+        Task { @MainActor [weak self] in
+            for offset in shakeOffsets {
+                guard let self = self, let panel = self.panel else { return }
+                var frame = originalFrame
+                frame.origin.x = originalFrame.origin.x + offset
+                panel.setFrame(frame, display: false)
+                try? await Task.sleep(nanoseconds: interval)
+            }
+        }
+    }
+
     /// Dismiss the current panel if shown
     /// - Parameter animated: Whether to animate the dismissal. Use `false` when replacing with a new popover.
     func dismiss(animated: Bool = true) {
         removeClickOutsideMonitor()
+        removeKeyboardMonitor()
+        // dismissDimWindow removed - see note in show()
 
         guard let panel = panel else {
             onDismissCallback?()
@@ -301,9 +366,11 @@ final class AnnotationPopoverController {
                 context.timingFunction = CAMediaTimingFunction(name: .easeIn)
                 panel.animator().alphaValue = 0
             } completionHandler: { [weak self] in
-                panel.close()
-                self?.onDismissCallback?()
-                self?.onDismissCallback = nil
+                Task { @MainActor in
+                    panel.close()
+                    self?.onDismissCallback?()
+                    self?.onDismissCallback = nil
+                }
             }
 
             // Animate the scale transform
