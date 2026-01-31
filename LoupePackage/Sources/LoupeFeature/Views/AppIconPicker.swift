@@ -24,7 +24,14 @@ public struct AppIconPicker: View {
         Button {
             isExpanded.toggle()
         } label: {
-            appIconView
+            HStack(spacing: 4) {
+                appIconView
+
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(height: 36)
         }
         .buttonStyle(.plain)
         .popover(isPresented: $isExpanded, arrowEdge: .bottom) {
@@ -40,17 +47,17 @@ public struct AppIconPicker: View {
                 Image(nsImage: icon)
                     .resizable()
                     .interpolation(.high)
-                    .frame(width: 28, height: 28)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .frame(width: 34, height: 34)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                     .help("Target: \(app.name)\nClick to change")
             } else {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 6)
+                    RoundedRectangle(cornerRadius: 8)
                         .fill(Color.secondary.opacity(0.2))
-                        .frame(width: 28, height: 28)
+                        .frame(width: 34, height: 34)
 
                     Image(systemName: "app.dashed")
-                        .font(.system(size: 16))
+                        .font(.system(size: 22))
                         .foregroundStyle(.secondary)
                 }
                 .help("Select target app")

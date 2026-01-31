@@ -45,9 +45,15 @@ struct AnnotationPopover: View {
             // Action buttons
             HStack {
                 Spacer()
-                Button("Cancel") { onCancel() }
+                Button("Cancel") {
+                    print("[Loupe] CANCEL BUTTON: Action fired!")
+                    onCancel()
+                }
                     .keyboardShortcut(.cancelAction)
-                Button("Add") { onSave(annotationText) }
+                Button("Add") {
+                    print("[Loupe] ADD BUTTON: Action fired!")
+                    onSave(annotationText)
+                }
                     .keyboardShortcut(.defaultAction)
                     .disabled(annotationText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -363,27 +369,25 @@ final class AnnotationPopoverController {
 
     /// Install event monitor to show wiggle animation when clicking outside the panel (modal behavior)
     private func installClickOutsideMonitor() {
-        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-            guard let self = self, let panel = self.panel else { return event }
+        // Use a GLOBAL monitor to detect clicks anywhere, including clicks that go to other apps.
+        // This is necessary because the overlay window ignores mouse events when the popover is active,
+        // allowing clicks to pass through to the target app. Global monitors observe but cannot consume events.
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self = self, let panel = self.panel else { return }
 
-            // Check if click is outside the panel
             let clickLocation = NSEvent.mouseLocation
-            if !panel.frame.contains(clickLocation) {
-                // Wiggle the popover to indicate it's modal - user must complete/cancel the annotation
-                self.wiggle()
-                // Consume the event to prevent it from reaching the overlay controller
-                return nil
-            }
+            let isInsidePanel = panel.frame.contains(clickLocation)
 
-            // Click is inside the panel - ensure the panel is key and app is active
-            // This is crucial for borderless panels to properly receive mouse events
-            if !panel.isKeyWindow {
+            print("[Loupe] CLICK (global): location=\(clickLocation), panelFrame=\(panel.frame), isInsidePanel=\(isInsidePanel)")
+
+            if !isInsidePanel {
+                // Click outside panel - wiggle to indicate modal behavior
+                print("[Loupe] CLICK (global): Outside panel - wiggling")
+                self.wiggle()
+                // Re-activate Loupe and bring popover to front
                 NSApp.activate(ignoringOtherApps: true)
                 panel.makeKeyAndOrderFront(nil)
             }
-
-            // Let clicks inside the panel through normally
-            return event
         }
     }
 

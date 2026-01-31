@@ -70,8 +70,20 @@ public final class OverlayWindowController: NSWindowController {
     private let elementLabelController = ElementLabelWindowController()
 
     /// Tracks whether the annotation popover is currently active (modal state)
-    /// When true, hover highlighting and click-to-inspect are blocked
-    private var isPopoverActive = false
+    /// When true, hover highlighting and click-to-inspect are blocked,
+    /// and the overlay window ignores mouse events so clicks reach the popover
+    private var isPopoverActive = false {
+        didSet {
+            guard isPopoverActive != oldValue else { return }
+            // When popover is active, let mouse events pass through the overlay
+            // to reach the PopoverPanel. Otherwise, respect isInspectionActive.
+            if isPopoverActive {
+                window?.ignoresMouseEvents = true
+            } else {
+                window?.ignoresMouseEvents = !isInspectionActive
+            }
+        }
+    }
 
     /// Callback triggered when user presses Escape to collapse the toolbar
     /// This allows the coordinator to handle the collapse and cleanup properly
