@@ -493,6 +493,13 @@ public final class OverlayWindowController: NSWindowController {
         // The popover's click monitor handles clicks and shows wiggle animation
         guard !isPopoverActive else { return }
 
+        // If hovering over a badge, delete it instead of creating new annotation
+        if let hoveredIndex = overlayState.hoveredBadgeIndex {
+            let badge = overlayState.annotationBadges[hoveredIndex]
+            deleteAnnotation(id: badge.id)
+            return
+        }
+
         guard let element = inspector.currentElement,
               let window = window else {
             return
