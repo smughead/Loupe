@@ -27,11 +27,20 @@ struct AnnotationPopover: View {
 
             Divider()
 
-            // Feedback text input
+            // Feedback text input with explicit focus styling
             TextField("What should change?", text: $annotationText, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
                 .lineLimit(3...6)
                 .focused($isTextFieldFocused)
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(nsColor: .textBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(isTextFieldFocused ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: isTextFieldFocused ? 2 : 1)
+                )
 
             // Action buttons
             HStack {
@@ -45,7 +54,13 @@ struct AnnotationPopover: View {
         }
         .padding()
         .frame(width: 320)
-        .onAppear { isTextFieldFocused = true }
+        .onAppear {
+            // Delay focus slightly to ensure the panel is fully key
+            // and the responder chain is properly set up
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                isTextFieldFocused = true
+            }
+        }
     }
 
     private var elementDetailsView: some View {
@@ -90,6 +105,22 @@ private class PopoverPanel: NSPanel {
     override func cancelOperation(_ sender: Any?) {
         // Handle Escape key
         close()
+    }
+}
+
+/// Custom NSView subclass that accepts first mouse to ensure clicks work
+/// immediately when the panel appears, even if it's not yet the key window.
+private class FirstMouseView: NSView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        // Critical: Return true to accept mouse clicks even when panel isn't key window
+        // Without this, borderless panels may ignore the first click
+        return true
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Let subviews (the SwiftUI hosting view) handle the hit test
+        // This ensures mouse events reach the actual controls
+        return super.hitTest(point)
     }
 }
 
@@ -156,8 +187,25 @@ final class AnnotationPopoverController {
         panel.backgroundColor = .clear
         panel.level = .popUpMenu
         panel.hasShadow = true
-        panel.contentViewController = hostingController
         panel.isFloatingPanel = true  // Stay above other windows
+        panel.becomesKeyOnlyIfNeeded = false  // Always become key when clicked
+        panel.hidesOnDeactivate = false  // Stay visible when app loses focus
+
+        // Wrap the hosting view in a FirstMouseView to ensure clicks work immediately
+        let hostingView = hostingController.view
+        let firstMouseContainer = FirstMouseView()
+        firstMouseContainer.wantsLayer = true
+        firstMouseContainer.addSubview(hostingView)
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            hostingView.leadingAnchor.constraint(equalTo: firstMouseContainer.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: firstMouseContainer.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: firstMouseContainer.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: firstMouseContainer.bottomAnchor)
+        ])
+
+        panel.contentView = firstMouseContainer
+        panel.contentViewController = hostingController  // Retain the hosting controller
 
         // Style the content view with rounded corners and background
         if let contentView = panel.contentView {
@@ -188,10 +236,10 @@ final class AnnotationPopoverController {
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
 
-        // Ensure the panel's content view becomes first responder
-        // This helps with subsequent popover shows when Loupe is already active
-        if let contentView = panel.contentView {
-            panel.makeFirstResponder(contentView)
+        // Delay making the hosting view first responder to allow SwiftUI's
+        // @FocusState to properly focus the text field via onAppear
+        DispatchQueue.main.async {
+            panel.makeFirstResponder(hostingView)
         }
 
         // Animate in with scale + fade
@@ -283,6 +331,13 @@ final class AnnotationPopoverController {
                 self.wiggle()
                 // Consume the event to prevent it from reaching the overlay controller
                 return nil
+            }
+
+            // Click is inside the panel - ensure the panel is key and app is active
+            // This is crucial for borderless panels to properly receive mouse events
+            if !panel.isKeyWindow {
+                NSApp.activate(ignoringOtherApps: true)
+                panel.makeKeyAndOrderFront(nil)
             }
 
             // Let clicks inside the panel through normally
