@@ -73,6 +73,10 @@ public final class OverlayWindowController: NSWindowController {
     /// When true, hover highlighting and click-to-inspect are blocked
     private var isPopoverActive = false
 
+    /// Windows whose frames should be excluded from mouse event processing.
+    /// Mouse moves and clicks within these windows will be passed through.
+    private var exclusionWindows: [NSWindow] = []
+
     /// Container view that wraps NSHostingView (unflipped, for correct popover positioning)
     private var containerView: NSView?
 
@@ -106,6 +110,26 @@ public final class OverlayWindowController: NSWindowController {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    // MARK: - Exclusion Zones
+
+    /// Add a window whose frame should be excluded from mouse event processing.
+    /// Mouse moves and clicks within this window's frame will be passed through.
+    public func addExclusionWindow(_ window: NSWindow) {
+        if !exclusionWindows.contains(window) {
+            exclusionWindows.append(window)
+        }
+    }
+
+    /// Check if a screen location is within any exclusion window
+    private func isLocationInExclusionZone(_ screenLocation: NSPoint) -> Bool {
+        for exclusionWindow in exclusionWindows {
+            if exclusionWindow.isVisible && exclusionWindow.frame.contains(screenLocation) {
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: - Setup
@@ -336,8 +360,14 @@ public final class OverlayWindowController: NSWindowController {
                 return event
             }
 
+            // Pass through clicks in exclusion zones (e.g., toolbar)
+            let mouseLocation = NSEvent.mouseLocation
+            if self.isLocationInExclusionZone(mouseLocation) {
+                return event
+            }
+
             // Check if click is within our window using mouse location in screen coordinates
-            if window.frame.contains(NSEvent.mouseLocation) {
+            if window.frame.contains(mouseLocation) {
                 self.handleMouseClicked(event: event)
                 return nil  // Consume the event
             }
@@ -356,6 +386,14 @@ public final class OverlayWindowController: NSWindowController {
     private func handleMouseMoved(_ screenLocation: NSPoint) {
         // Block hover highlighting while popover is active (modal state)
         guard !isPopoverActive else { return }
+
+        // Block hover highlighting when mouse is over an exclusion zone (e.g., toolbar)
+        if isLocationInExclusionZone(screenLocation) {
+            overlayState.highlightFrame = nil
+            overlayState.hoveredBadgeIndex = nil
+            elementLabelController.hide()
+            return
+        }
 
         // screenLocation is already in screen coordinates (bottom-left origin)
         // from NSEvent.mouseLocation - no window conversion needed

@@ -65,7 +65,7 @@ public final class FloatingToolbarWindowController: NSWindowController, Observab
 
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.level = .floating
+        window.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
         window.hasShadow = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         window.isMovableByWindowBackground = true

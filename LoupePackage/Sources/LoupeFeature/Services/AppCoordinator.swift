@@ -106,6 +106,13 @@ public final class AppCoordinator {
             inspector: inspector,
             targetApp: app
         )
+
+        // Register the toolbar window as an exclusion zone so mouse events
+        // over the toolbar are passed through instead of being consumed
+        if let toolbarWindow = floatingToolbar.window {
+            controller.addExclusionWindow(toolbarWindow)
+        }
+
         controller.isInspectionActive = true
         controller.showWindow(nil)
         overlayController = controller
