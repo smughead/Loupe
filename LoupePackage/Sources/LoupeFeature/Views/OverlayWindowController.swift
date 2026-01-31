@@ -354,6 +354,9 @@ public final class OverlayWindowController: NSWindowController {
             height: axFrame.height
         )
 
+        // Debug: show conversion details (only when clicking to reduce spam)
+        // print("[Loupe] convertAXFrameToLocal: windowFrame=\(windowFrame), windowTopInAX=\(windowTopInAX)")
+
         return localFrame
     }
 
@@ -519,7 +522,11 @@ public final class OverlayWindowController: NSWindowController {
 
         // Update highlight frame using shared coordinate conversion
         if let element = inspector.currentElement {
-            overlayState.highlightFrame = convertAXFrameToLocal(element.frame)
+            let localFrame = convertAXFrameToLocal(element.frame)
+            overlayState.highlightFrame = localFrame
+
+            // Debug: Log highlight positioning
+            print("[Loupe] HIGHLIGHT: element.frame(AX)=\(element.frame) → localFrame=\(String(describing: localFrame))")
 
             // Show element label near the element (convert AX frame to screen coordinates)
             if let screenFrame = convertAXFrameToScreen(element.frame) {
@@ -564,59 +571,44 @@ public final class OverlayWindowController: NSWindowController {
         }
 
         guard let element = inspector.currentElement,
-              let window = window else {
+              let window = window,
+              let elementScreenFrame = convertAXFrameToScreen(element.frame) else {
             return
         }
 
-        // Get click location from the event if available, otherwise use current mouse position
-        let clickInWindow: NSPoint
-        if let event = event {
-            clickInWindow = event.locationInWindow
-        } else {
-            let screenLocation = NSEvent.mouseLocation
-            clickInWindow = window.convertPoint(fromScreen: screenLocation)
-        }
+        // Debug: Log click positioning
+        print("[Loupe] CLICK: element.frame(AX)=\(element.frame) → screenFrame=\(elementScreenFrame)")
+        print("[Loupe] CLICK: window.frame=\(window.frame), screen.height=\(NSScreen.main?.frame.height ?? 0)")
 
-        // Smart edge selection based on screen position to avoid collisions:
-        // - Near top of screen: use .maxY (popover below, caret up) - plenty of room below
-        // - Near bottom of screen: use .minY (popover above, caret down) - plenty of room above
-        // - Near right edge: use .minX (popover left)
-        // - Default: use .maxX (popover right) - most reliable positioning
-        let clickInScreen = window.convertPoint(toScreen: clickInWindow)
+        // Use the element's screen frame for positioning decisions
         let screenFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
 
+        // Determine preferred edge based on element position on screen
         let topThreshold = screenFrame.maxY - 150  // Near top of screen (within ~150px of menu bar)
         let bottomThreshold = screenFrame.minY + 200  // Near bottom of screen
         let rightThreshold = screenFrame.maxX - (screenFrame.width * 0.3)
 
         let preferredEdge: NSRectEdge
-        let edgeName: String
 
-        if clickInScreen.y > topThreshold {
-            // Near top of screen - show popover below
+        if elementScreenFrame.midY > topThreshold {
+            // Element is near top of screen - show popover below element
             preferredEdge = .maxY
-            edgeName = ".maxY (below)"
-        } else if clickInScreen.y < bottomThreshold {
-            // Near bottom of screen - show popover above
+        } else if elementScreenFrame.midY < bottomThreshold {
+            // Element is near bottom of screen - show popover above element
             preferredEdge = .minY
-            edgeName = ".minY (above)"
-        } else if clickInScreen.x > rightThreshold {
-            // Near right edge - show popover to the left
+        } else if elementScreenFrame.maxX > rightThreshold {
+            // Element is near right edge - show popover to the left of element
             preferredEdge = .minX
-            edgeName = ".minX (left)"
         } else {
-            // Default - show popover to the right
+            // Default - show popover to the right of element
             preferredEdge = .maxX
-            edgeName = ".maxX (right)"
         }
-
-        print("[Loupe] clickInScreen.y=\(clickInScreen.y), screenFrame.maxY=\(screenFrame.maxY), topThreshold=\(topThreshold), edge=\(edgeName)")
 
         // Enter modal state before showing popover
         isPopoverActive = true
 
         popoverController.show(
-            at: clickInScreen,
+            forElementFrame: elementScreenFrame,
             preferredEdge: preferredEdge,
             element: element,
             onSave: { [weak self] text in

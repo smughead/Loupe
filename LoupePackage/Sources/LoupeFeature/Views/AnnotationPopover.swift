@@ -132,12 +132,18 @@ final class AnnotationPopoverController {
     private var keyMonitor: Any?
     private var onDismissCallback: (() -> Void)?
 
-    /// Spacing between click point and panel edge
+    /// Spacing between element and panel edge
     private let panelOffset: CGFloat = 8
 
-    /// Show the annotation popover at a screen position
+    /// Show the annotation popover adjacent to an element
+    /// - Parameters:
+    ///   - elementFrame: The element's frame in screen coordinates (AppKit: origin at bottom-left)
+    ///   - preferredEdge: Which edge of the element to attach the popover to
+    ///   - element: The accessibility element info to display
+    ///   - onSave: Callback when user saves the annotation
+    ///   - onDismiss: Callback when popover is dismissed
     func show(
-        at screenPoint: NSPoint,
+        forElementFrame elementFrame: NSRect,
         preferredEdge: NSRectEdge,
         element: AXElementInfo,
         onSave: @escaping (String) -> Void,
@@ -168,9 +174,9 @@ final class AnnotationPopoverController {
         let hostingController = NSHostingController(rootView: content)
         let contentSize = hostingController.view.fittingSize
 
-        // Calculate panel position based on preferred edge
+        // Calculate panel position based on preferred edge and element frame
         let panelOrigin = calculatePanelOrigin(
-            screenPoint: screenPoint,
+            elementFrame: elementFrame,
             contentSize: contentSize,
             preferredEdge: preferredEdge
         )
@@ -207,6 +213,10 @@ final class AnnotationPopoverController {
         panel.contentView = firstMouseContainer
         panel.contentViewController = hostingController  // Retain the hosting controller
 
+        // IMPORTANT: Setting contentView can change the frame, so explicitly set it again
+        // to ensure the panel is positioned at our calculated origin
+        panel.setFrameOrigin(panelOrigin)
+
         // Style the content view with rounded corners and background
         if let contentView = panel.contentView {
             contentView.wantsLayer = true
@@ -231,10 +241,17 @@ final class AnnotationPopoverController {
 
         self.panel = panel
 
+        // Debug: Log intended vs actual panel frame
+        print("[Loupe] POPOVER: intended origin = \(panelOrigin), size = \(contentSize)")
+        print("[Loupe] POPOVER: panel.frame AFTER setFrameOrigin = \(panel.frame)")
+
         // Activate Loupe app and show panel with focus
         // Use makeKeyAndOrderFront for more reliable focus handling
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+
+        // Debug: Log actual frame after showing
+        print("[Loupe] POPOVER: panel.frame AFTER show = \(panel.frame)")
 
         // Delay making the hosting view first responder to allow SwiftUI's
         // @FocusState to properly focus the text field via onAppear
@@ -267,35 +284,58 @@ final class AnnotationPopoverController {
         installKeyboardMonitor()
     }
 
-    /// Calculate where to position the panel origin based on the click point and preferred edge
+    /// Calculate where to position the panel origin based on the element frame and preferred edge
     private func calculatePanelOrigin(
-        screenPoint: NSPoint,
+        elementFrame: NSRect,
         contentSize: NSSize,
         preferredEdge: NSRectEdge
     ) -> NSPoint {
-        var origin = screenPoint
+        var origin: NSPoint
+        let edgeName: String
 
+        // Position the popover adjacent to the element's edge, vertically/horizontally centered
         switch preferredEdge {
         case .minX:
-            // Panel appears to the left of click point
-            origin.x = screenPoint.x - contentSize.width - panelOffset
-            origin.y = screenPoint.y - contentSize.height / 2
+            // Panel appears to the left of element
+            origin = NSPoint(
+                x: elementFrame.minX - contentSize.width - panelOffset,
+                y: elementFrame.midY - contentSize.height / 2
+            )
+            edgeName = "minX (left of element)"
         case .maxX:
-            // Panel appears to the right of click point
-            origin.x = screenPoint.x + panelOffset
-            origin.y = screenPoint.y - contentSize.height / 2
+            // Panel appears to the right of element
+            origin = NSPoint(
+                x: elementFrame.maxX + panelOffset,
+                y: elementFrame.midY - contentSize.height / 2
+            )
+            edgeName = "maxX (right of element)"
         case .minY:
-            // Panel appears above click point (in AppKit coords, minY is bottom)
-            origin.x = screenPoint.x - contentSize.width / 2
-            origin.y = screenPoint.y + panelOffset
+            // Panel appears above element (in AppKit coords, minY is bottom, so "above" means higher Y)
+            origin = NSPoint(
+                x: elementFrame.midX - contentSize.width / 2,
+                y: elementFrame.maxY + panelOffset
+            )
+            edgeName = "minY (above element)"
         case .maxY:
-            // Panel appears below click point
-            origin.x = screenPoint.x - contentSize.width / 2
-            origin.y = screenPoint.y - contentSize.height - panelOffset
+            // Panel appears below element
+            origin = NSPoint(
+                x: elementFrame.midX - contentSize.width / 2,
+                y: elementFrame.minY - contentSize.height - panelOffset
+            )
+            edgeName = "maxY (below element)"
         @unknown default:
-            origin.x = screenPoint.x + panelOffset
-            origin.y = screenPoint.y - contentSize.height / 2
+            origin = NSPoint(
+                x: elementFrame.maxX + panelOffset,
+                y: elementFrame.midY - contentSize.height / 2
+            )
+            edgeName = "unknown"
         }
+
+        print("[Loupe] calculatePanelOrigin:")
+        print("[Loupe]   elementFrame = \(elementFrame)")
+        print("[Loupe]   contentSize = \(contentSize)")
+        print("[Loupe]   preferredEdge = \(edgeName)")
+        print("[Loupe]   calculated origin = \(origin)")
 
         // Ensure panel stays on screen
         if let screen = NSScreen.main {
@@ -314,6 +354,8 @@ final class AnnotationPopoverController {
             } else if origin.y + contentSize.height > screenFrame.maxY {
                 origin.y = screenFrame.maxY - contentSize.height
             }
+
+            print("[Loupe]   final origin (after clamping) = \(origin)")
         }
 
         return origin
