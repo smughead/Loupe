@@ -105,13 +105,10 @@ public struct ContentView: View {
             permissionView
         } else if coordinator.selectedApp == nil {
             noAppSelectedView
-        } else if let store = coordinator.annotationStore {
-            AnnotationListView(store: store) {
+        } else {
+            AnnotationListView(store: coordinator.annotationStore) {
                 coordinator.copyFeedbackToClipboard()
             }
-        } else {
-            // Inspection not started yet
-            readyToInspectView
         }
     }
 

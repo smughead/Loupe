@@ -52,10 +52,8 @@ public final class AppCoordinator {
     /// The overlay controller (created when inspection starts)
     public private(set) var overlayController: OverlayWindowController?
 
-    /// Convenience access to the annotation store from the overlay
-    public var annotationStore: AnnotationStore? {
-        overlayController?.annotationStore
-    }
+    /// Persistent annotation store (survives across inspection sessions)
+    public let annotationStore = AnnotationStore()
 
     // MARK: - Initialization
 
@@ -104,7 +102,8 @@ public final class AppCoordinator {
         // Create overlay (Loupe stays active and owns focus)
         let controller = OverlayWindowController(
             inspector: inspector,
-            targetApp: app
+            targetApp: app,
+            annotationStore: annotationStore
         )
 
         // Register the toolbar window as an exclusion zone so mouse events
@@ -113,12 +112,22 @@ public final class AppCoordinator {
             controller.addExclusionWindow(toolbarWindow)
         }
 
+        // Wire up Escape key to collapse the toolbar
+        controller.onRequestCollapse = { [weak self] in
+            self?.floatingToolbar.isExpanded = false
+        }
+
         controller.isInspectionActive = true
         controller.showWindow(nil)
         overlayController = controller
 
         // Connect toolbar to annotation store for badge updates
-        floatingToolbar.setAnnotationStore(controller.annotationStore)
+        floatingToolbar.setAnnotationStore(annotationStore)
+
+        // Force badge refresh after window is fully shown (fixes timing issue)
+        DispatchQueue.main.async {
+            controller.refreshAnnotationBadges()
+        }
     }
 
     private func stopInspection() {
@@ -143,12 +152,11 @@ public final class AppCoordinator {
 
     /// Copy all annotations as markdown to clipboard
     public func copyFeedbackToClipboard() {
-        guard let store = annotationStore,
-              let app = selectedApp else { return }
+        guard let app = selectedApp else { return }
 
         let generator = FeedbackOutputGenerator()
         generator.copyToClipboard(
-            annotations: store.annotations,
+            annotations: annotationStore.annotations,
             appName: app.name,
             bundleIdentifier: app.bundleIdentifier,
             windowTitle: inspector.getTargetWindowTitle()
@@ -157,7 +165,7 @@ public final class AppCoordinator {
 
     /// Clear all annotations
     public func clearAnnotations() {
-        annotationStore?.clear()
+        annotationStore.clear()
         floatingToolbar.refreshContent()
     }
 

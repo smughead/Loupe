@@ -20,6 +20,8 @@ class OverlayState {
     var highlightFrame: CGRect?
     /// The index of the badge currently being hovered (nil if none)
     var hoveredBadgeIndex: Int?
+    /// Annotation badges to render (observable so Canvas redraws when they change)
+    var annotationBadges: [AnnotationBadge] = []
 }
 
 /// Controller for the transparent overlay window that draws element highlights
@@ -54,11 +56,8 @@ public final class OverlayWindowController: NSWindowController {
     /// Reference to self for CVDisplayLink callback (must be unowned to avoid retain cycle)
     private var displayLinkContext: DisplayLinkContext?
 
-    /// Store for annotations on inspected elements
-    public let annotationStore = AnnotationStore()
-
-    /// Cached annotation badge positions in local coordinates (updated each frame)
-    private var annotationBadges: [AnnotationBadge] = []
+    /// Store for annotations on inspected elements (injected from coordinator)
+    public let annotationStore: AnnotationStore
 
     /// Workspace notification observers for app activation tracking
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -73,6 +72,10 @@ public final class OverlayWindowController: NSWindowController {
     /// When true, hover highlighting and click-to-inspect are blocked
     private var isPopoverActive = false
 
+    /// Callback triggered when user presses Escape to collapse the toolbar
+    /// This allows the coordinator to handle the collapse and cleanup properly
+    public var onRequestCollapse: (() -> Void)?
+
     /// Windows whose frames should be excluded from mouse event processing.
     /// Mouse moves and clicks within these windows will be passed through.
     private var exclusionWindows: [NSWindow] = []
@@ -80,9 +83,10 @@ public final class OverlayWindowController: NSWindowController {
     /// Container view that wraps NSHostingView (unflipped, for correct popover positioning)
     private var containerView: NSView?
 
-    public init(inspector: AccessibilityInspector, targetApp: TargetApp) {
+    public init(inspector: AccessibilityInspector, targetApp: TargetApp, annotationStore: AnnotationStore) {
         self.inspector = inspector
         self.targetApp = targetApp
+        self.annotationStore = annotationStore
 
         // Create a transparent, borderless window (using custom subclass for click support)
         let window = OverlayWindow(
@@ -137,11 +141,10 @@ public final class OverlayWindowController: NSWindowController {
     private func setupOverlayContent() {
         let overlayView = OverlayView(
             overlayState: overlayState,
-            annotationBadges: { [weak self] in self?.annotationBadges ?? [] },
             onMouseMoved: { [weak self] location in self?.handleMouseMoved(location) },
             onMouseClicked: { [weak self] in self?.handleMouseClicked() },
             onBadgeDelete: { [weak self] badgeId in self?.deleteAnnotation(id: badgeId) },
-            onEscape: { [weak self] in self?.close() }
+            onEscape: { [weak self] in self?.onRequestCollapse?() }
         )
 
         // Create a container view to wrap NSHostingView
@@ -321,9 +324,14 @@ public final class OverlayWindowController: NSWindowController {
         )
     }
 
+    /// Force a refresh of annotation badge positions (call after window is fully shown)
+    public func refreshAnnotationBadges() {
+        updateWindowFrame()
+    }
+
     /// Update cached annotation badge positions in local coordinates
     private func updateAnnotationBadges() {
-        annotationBadges = annotationStore.annotations.compactMap { annotation in
+        overlayState.annotationBadges = annotationStore.annotations.compactMap { annotation in
             guard let localFrame = convertAXFrameToLocal(annotation.elementFrame) else { return nil }
 
             // Position badge at top-right corner of the element
@@ -417,7 +425,7 @@ public final class OverlayWindowController: NSWindowController {
         overlayState.hoveredBadgeIndex = nil
 
         if let localPoint = localLocation {
-            for (index, badge) in annotationBadges.enumerated() {
+            for (index, badge) in overlayState.annotationBadges.enumerated() {
                 if badge.hitTestRect.contains(localPoint) {
                     overlayState.hoveredBadgeIndex = index
                     break
@@ -594,7 +602,6 @@ public final class OverlayWindowController: NSWindowController {
 
 struct OverlayView: View {
     let overlayState: OverlayState
-    let annotationBadges: () -> [AnnotationBadge]
     let onMouseMoved: (NSPoint) -> Void
     let onMouseClicked: () -> Void
     let onBadgeDelete: (UUID) -> Void
@@ -655,8 +662,7 @@ struct OverlayView: View {
                     }
 
                     // Draw annotation badges
-                    let badges = annotationBadges()
-                    for (index, badge) in badges.enumerated() {
+                    for (index, badge) in overlayState.annotationBadges.enumerated() {
                         let isHovered = overlayState.hoveredBadgeIndex == index
                         drawBadge(context: context, badge: badge, isHovered: isHovered)
                     }
@@ -664,7 +670,7 @@ struct OverlayView: View {
 
                 // Overlay SwiftUI buttons for hovered badge tooltips
                 // This provides proper tooltip and click handling that Canvas can't do
-                ForEach(Array(annotationBadges().enumerated()), id: \.element.id) { index, badge in
+                ForEach(Array(overlayState.annotationBadges.enumerated()), id: \.element.id) { index, badge in
                     if overlayState.hoveredBadgeIndex == index {
                         BadgeDeleteButton(badge: badge) {
                             onBadgeDelete(badge.id)
