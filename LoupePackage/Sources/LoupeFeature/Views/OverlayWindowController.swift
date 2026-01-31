@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import CoreVideo
+import CoreGraphics
 
 // MARK: - Custom Window for Click Support
 
@@ -133,6 +134,55 @@ public final class OverlayWindowController: NSWindowController {
                 return true
             }
         }
+        return false
+    }
+
+    /// Check if the target app's window is the frontmost window at the given screen position.
+    /// Uses CGWindowListCopyWindowInfo to get windows in z-order and finds the topmost
+    /// window at the cursor position (excluding Loupe's own windows and system UI).
+    private func isTargetAppWindowFrontmostAt(_ screenLocation: NSPoint) -> Bool {
+        // Get Loupe's own PID to exclude our windows
+        let loupePid = ProcessInfo.processInfo.processIdentifier
+        let targetPid = targetApp.id
+
+        // Get all on-screen windows in front-to-back order
+        let windowListOptions: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let windowInfoList = CGWindowListCopyWindowInfo(windowListOptions, kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+
+        // CGWindowList uses top-left origin (like AX), but screenLocation is in AppKit coords (bottom-left)
+        // Convert to CG coordinates for comparison
+        guard let mainScreen = NSScreen.main else { return false }
+        let cgPoint = CGPoint(x: screenLocation.x, y: mainScreen.frame.height - screenLocation.y)
+
+        // Find the first (topmost) window that contains the cursor position
+        // (excluding Loupe's own windows)
+        for windowInfo in windowInfoList {
+            guard let ownerPid = windowInfo[kCGWindowOwnerPID as String] as? pid_t,
+                  let boundsDict = windowInfo[kCGWindowBounds as String] as? [String: CGFloat],
+                  let x = boundsDict["X"],
+                  let y = boundsDict["Y"],
+                  let width = boundsDict["Width"],
+                  let height = boundsDict["Height"] else {
+                continue
+            }
+
+            // Skip Loupe's own windows
+            if ownerPid == loupePid {
+                continue
+            }
+
+            // Check if this window contains the cursor position
+            let windowFrame = CGRect(x: x, y: y, width: width, height: height)
+            if windowFrame.contains(cgPoint) {
+                // Found the topmost window at this position
+                // Return true only if it belongs to the target app
+                return ownerPid == targetPid
+            }
+        }
+
+        // No window found at position (shouldn't happen normally)
         return false
     }
 
@@ -376,10 +426,14 @@ public final class OverlayWindowController: NSWindowController {
 
             // Check if click is within our window using mouse location in screen coordinates
             if window.frame.contains(mouseLocation) {
-                self.handleMouseClicked(event: event)
-                return nil  // Consume the event
+                // Only capture click if target app's window is frontmost at this position
+                // Otherwise, pass through so user can interact with the window in front
+                if self.isTargetAppWindowFrontmostAt(mouseLocation) {
+                    self.handleMouseClicked(event: event)
+                    return nil  // Consume the event
+                }
             }
-            return event  // Pass through clicks outside our window
+            return event  // Pass through clicks outside our window or when another window is in front
         }
     }
 
@@ -412,6 +466,15 @@ public final class OverlayWindowController: NSWindowController {
 
         if !window.frame.contains(screenLocation) {
             // Mouse is outside the target app's window - clear highlight
+            overlayState.highlightFrame = nil
+            overlayState.hoveredBadgeIndex = nil
+            elementLabelController.hide()
+            return
+        }
+
+        // Block hover highlighting if the target app's window is NOT the frontmost
+        // window at this position (i.e., another app's window is covering it)
+        if !isTargetAppWindowFrontmostAt(screenLocation) {
             overlayState.highlightFrame = nil
             overlayState.hoveredBadgeIndex = nil
             elementLabelController.hide()
