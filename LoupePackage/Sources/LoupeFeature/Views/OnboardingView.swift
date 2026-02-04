@@ -2,6 +2,26 @@ import AppKit
 import AVKit
 import SwiftUI
 
+// MARK: - AVPlayerView wrapper
+
+/// Wraps AppKit's `AVPlayerView` directly, bypassing the `_AVKit_SwiftUI` bridge
+/// which crashes on macOS 26 due to a Swift runtime metadata resolution failure.
+struct NativeVideoPlayer: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.player = player
+        view.controlsStyle = .inline
+        view.showsFullScreenToggleButton = false
+        return view
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        nsView.player = player
+    }
+}
+
 // MARK: - State
 
 enum OnboardingPhase {
@@ -176,7 +196,7 @@ struct OnboardingView: View {
                 .fontWeight(.semibold)
 
             if let player = state.videoPlayer {
-                VideoPlayer(player: player)
+                NativeVideoPlayer(player: player)
                     .aspectRatio(16 / 9, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .padding(.horizontal, 24)
