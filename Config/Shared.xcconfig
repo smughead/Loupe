@@ -9,8 +9,8 @@
 PRODUCT_NAME = Loupe
 PRODUCT_DISPLAY_NAME = Loupe
 PRODUCT_BUNDLE_IDENTIFIER = com.smughead.Loupe
-MARKETING_VERSION = 1.0
-CURRENT_PROJECT_VERSION = 1
+MARKETING_VERSION = 1.1.0
+CURRENT_PROJECT_VERSION = 2
 
 // ==========================================
 // Platform Configuration
