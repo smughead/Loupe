@@ -28,6 +28,13 @@ GENERATE_INFOPLIST_FILE = YES
 ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon
 
 // ==========================================
+// Code Signing
+// ==========================================
+ENABLE_HARDENED_RUNTIME = YES
+CODE_SIGN_STYLE = Automatic
+DEVELOPMENT_TEAM = SDSL569695
+
+// ==========================================
 // Entitlements
 // ==========================================
 // AI agents can modify Config/Loupe.entitlements to add capabilities
