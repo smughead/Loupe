@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Loupe — Target elements, not screenshots.</title>
+    <meta name="description" content="macOS accessibility inspector for AI-agent workflows. Inspect UI elements, annotate changes, copy agent-readable output.">
+    <meta property="og:title" content="Loupe — Target elements, not screenshots.">
+    <meta property="og:description" content="macOS accessibility inspector for AI-agent workflows.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://smughead.github.io/Loupe/">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --accent: #f59e0b;
+            --accent-hover: #d97706;
+            --accent-dim: rgba(245, 158, 11, 0.12);
+            --accent-glow: rgba(245, 158, 11, 0.06);
+
+            --bg-primary: #0a0a0b;
+            --bg-secondary: #111113;
+            --bg-card: #141416;
+            --bg-elevated: #1c1c1f;
+
+            --border: rgba(255, 255, 255, 0.06);
+            --border-accent: rgba(245, 158, 11, 0.2);
+
+            --text-primary: #fafafa;
+            --text-secondary: #a1a1a6;
+            --text-tertiary: #6b6b70;
+
+            --font-body: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-mono: 'JetBrains Mono', 'SF Mono', Monaco, monospace;
+
+            --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        html {
+            scroll-behavior: smooth;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        body {
+            font-family: var(--font-body);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* ── Grain texture overlay ── */
+        body::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 9999;
+            opacity: 0.03;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+        }
+
+        /* ── Layout ── */
+        .container {
+            max-width: 980px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        section {
+            padding: 100px 0;
+        }
+
+        /* ── Nav ── */
+        nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            padding: 16px 0;
+            background: rgba(10, 10, 11, 0.8);
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            border-bottom: 1px solid var(--border);
+        }
+
+        nav .container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+            color: var(--text-primary);
+        }
+
+        .nav-logo {
+            width: 28px;
+            height: 28px;
+            border-radius: 7px;
+        }
+
+        .nav-logo img {
+            width: 100%;
+            height: 100%;
+            border-radius: 7px;
+        }
+
+        .nav-name {
+            font-size: 15px;
+            font-weight: 600;
+            letter-spacing: -0.01em;
+        }
+
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 32px;
+            list-style: none;
+        }
+
+        .nav-links a {
+            font-size: 14px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        .nav-links a:hover {
+            color: var(--text-primary);
+        }
+
+        .nav-links .btn-sm {
+            font-size: 13px;
+            padding: 7px 16px;
+            background: var(--accent);
+            color: var(--bg-primary);
+            border-radius: 8px;
+            font-weight: 600;
+            transition: background 0.2s, transform 0.15s;
+        }
+
+        .nav-links .btn-sm:hover {
+            background: var(--accent-hover);
+            color: var(--bg-primary);
+            transform: translateY(-1px);
+        }
+
+        /* ── Hero ── */
+        .hero {
+            padding: 180px 0 120px;
+            text-align: center;
+            position: relative;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 600px;
+            height: 500px;
+            background: radial-gradient(ellipse, var(--accent-glow) 0%, transparent 70%);
+            pointer-events: none;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 16px;
+            border-radius: 100px;
+            border: 1px solid var(--border-accent);
+            background: var(--accent-dim);
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--accent);
+            margin-bottom: 32px;
+            animation: fadeUp 0.8s var(--ease-out) both;
+        }
+
+        .hero-badge svg {
+            width: 14px;
+            height: 14px;
+        }
+
+        .hero h1 {
+            font-size: clamp(42px, 6vw, 64px);
+            font-weight: 600;
+            letter-spacing: -0.035em;
+            line-height: 1.08;
+            max-width: 700px;
+            margin: 0 auto 24px;
+            animation: fadeUp 0.8s var(--ease-out) 0.1s both;
+        }
+
+        .hero h1 .accent {
+            color: var(--accent);
+        }
+
+        .hero-sub {
+            font-size: 18px;
+            color: var(--text-secondary);
+            max-width: 520px;
+            margin: 0 auto 48px;
+            line-height: 1.7;
+            animation: fadeUp 0.8s var(--ease-out) 0.2s both;
+        }
+
+        .hero-actions {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            animation: fadeUp 0.8s var(--ease-out) 0.3s both;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 28px;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 600;
+            font-family: var(--font-body);
+            text-decoration: none;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s var(--ease-out);
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: var(--bg-primary);
+            box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.3), 0 4px 16px rgba(245, 158, 11, 0.15);
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+            transform: translateY(-2px);
+            box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.4), 0 8px 24px rgba(245, 158, 11, 0.2);
+        }
+
+        .btn-secondary {
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover {
+            background: #232326;
+            border-color: rgba(255, 255, 255, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .btn svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        /* ── Video ── */
+        .video-section {
+            padding: 0 0 80px;
+            animation: fadeUp 0.8s var(--ease-out) 0.4s both;
+        }
+
+        .video-wrapper {
+            max-width: 800px;
+            margin: 0 auto;
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+            background: var(--bg-card);
+            aspect-ratio: 16/9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        .video-wrapper video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .video-placeholder {
+            color: var(--text-tertiary);
+            font-size: 14px;
+            text-align: center;
+        }
+
+        .video-placeholder svg {
+            width: 48px;
+            height: 48px;
+            margin-bottom: 12px;
+            opacity: 0.3;
+        }
+
+        /* ── How it works ── */
+        .how-it-works {
+            border-top: 1px solid var(--border);
+        }
+
+        .section-label {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 16px;
+        }
+
+        .section-title {
+            font-size: clamp(28px, 4vw, 38px);
+            font-weight: 600;
+            letter-spacing: -0.03em;
+            margin-bottom: 16px;
+        }
+
+        .section-desc {
+            font-size: 16px;
+            color: var(--text-secondary);
+            max-width: 500px;
+            margin-bottom: 64px;
+            line-height: 1.7;
+        }
+
+        .steps-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1px;
+            background: var(--border);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+
+        .step {
+            background: var(--bg-card);
+            padding: 36px 28px;
+            position: relative;
+            transition: background 0.3s;
+        }
+
+        .step:hover {
+            background: var(--bg-elevated);
+        }
+
+        .step-num {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--accent);
+            margin-bottom: 20px;
+            opacity: 0.7;
+        }
+
+        .step-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            background: var(--accent-dim);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+
+        .step-icon svg {
+            width: 20px;
+            height: 20px;
+            color: var(--accent);
+        }
+
+        .step h3 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            letter-spacing: -0.01em;
+        }
+
+        .step p {
+            font-size: 14px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        /* ── Features ── */
+        .features {
+            border-top: 1px solid var(--border);
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1px;
+            background: var(--border);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+
+        .feature {
+            background: var(--bg-card);
+            padding: 36px 28px;
+            transition: background 0.3s;
+        }
+
+        .feature:hover {
+            background: var(--bg-elevated);
+        }
+
+        .feature h3 {
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .feature h3 span {
+            font-size: 18px;
+        }
+
+        .feature p {
+            font-size: 14px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        /* ── Download ── */
+        .download {
+            border-top: 1px solid var(--border);
+            text-align: center;
+        }
+
+        .download-card {
+            max-width: 560px;
+            margin: 0 auto;
+            padding: 56px 48px;
+            background: var(--bg-card);
+            border-radius: 20px;
+            border: 1px solid var(--border);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .download-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 300px;
+            height: 200px;
+            background: radial-gradient(ellipse, var(--accent-glow) 0%, transparent 70%);
+            pointer-events: none;
+        }
+
+        .download-icon {
+            width: 64px;
+            height: 64px;
+            border-radius: 14px;
+            margin: 0 auto 20px;
+        }
+
+        .download-icon img {
+            width: 100%;
+            height: 100%;
+            border-radius: 14px;
+        }
+
+        .download-card h2 {
+            font-size: 28px;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            margin-bottom: 12px;
+        }
+
+        .download-card p {
+            font-size: 15px;
+            color: var(--text-secondary);
+            margin-bottom: 32px;
+        }
+
+        .download-card .btn {
+            margin-bottom: 16px;
+        }
+
+        .download-meta {
+            font-size: 13px;
+            color: var(--text-tertiary);
+        }
+
+        .download-meta a {
+            color: var(--text-secondary);
+            text-decoration: underline;
+            text-underline-offset: 3px;
+            transition: color 0.2s;
+        }
+
+        .download-meta a:hover {
+            color: var(--text-primary);
+        }
+
+        /* ── Footer ── */
+        footer {
+            border-top: 1px solid var(--border);
+            padding: 40px 0;
+        }
+
+        footer .container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .footer-left {
+            font-size: 13px;
+            color: var(--text-tertiary);
+        }
+
+        .footer-left a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        .footer-left a:hover {
+            color: var(--text-primary);
+        }
+
+        .footer-links {
+            display: flex;
+            gap: 24px;
+            list-style: none;
+        }
+
+        .footer-links a {
+            font-size: 13px;
+            color: var(--text-tertiary);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        .footer-links a:hover {
+            color: var(--text-primary);
+        }
+
+        /* ── Animations ── */
+        @keyframes fadeUp {
+            from {
+                opacity: 0;
+                transform: translateY(16px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .reveal {
+            opacity: 0;
+            transform: translateY(20px);
+            transition: opacity 0.6s var(--ease-out), transform 0.6s var(--ease-out);
+        }
+
+        .reveal.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 768px) {
+            section {
+                padding: 72px 0;
+            }
+
+            .hero {
+                padding: 140px 0 80px;
+            }
+
+            .steps-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .hero-actions {
+                flex-direction: column;
+            }
+
+            .btn {
+                width: 100%;
+                justify-content: center;
+            }
+
+            footer .container {
+                flex-direction: column;
+                gap: 16px;
+                text-align: center;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .steps-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .nav-links .hide-mobile {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Nav -->
+    <nav>
+        <div class="container">
+            <a href="#" class="nav-brand">
+                <div class="nav-logo"><img src="app-icon.png" alt="Loupe icon"></div>
+                <span class="nav-name">Loupe</span>
+            </a>
+            <ul class="nav-links">
+                <li><a href="#how-it-works" class="hide-mobile">How it works</a></li>
+                <li><a href="https://github.com/smughead/Loupe" target="_blank" rel="noopener">GitHub</a></li>
+                <li><a href="https://github.com/smughead/Loupe/releases/latest" class="btn-sm">Download</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <section class="hero">
+        <div class="container">
+            <div class="hero-badge">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                macOS accessibility inspector for AI agents
+            </div>
+            <h1>Target elements,<br>not <span class="accent">screenshots</span>.</h1>
+            <p class="hero-sub">Inspect any UI element in any Mac app. Annotate what you want changed. Copy structured output that AI agents actually understand.</p>
+            <div class="hero-actions">
+                <a href="https://github.com/smughead/Loupe/releases/latest" class="btn btn-primary">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    Download for macOS
+                </a>
+                <a href="https://github.com/smughead/Loupe" target="_blank" rel="noopener" class="btn btn-secondary">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    View source
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Video -->
+    <section class="video-section">
+        <div class="container">
+            <div class="video-wrapper">
+                <video src="demo.mp4" autoplay loop muted playsinline></video>
+            </div>
+        </div>
+    </section>
+
+    <!-- How it works -->
+    <section class="how-it-works" id="how-it-works">
+        <div class="container">
+            <div class="reveal">
+                <p class="section-label">Workflow</p>
+                <h2 class="section-title">Four steps. Zero screenshots.</h2>
+                <p class="section-desc">Loupe gives your AI assistant structured context about exactly which UI element to target — no more describing buttons in chat.</p>
+            </div>
+            <div class="steps-grid reveal">
+                <div class="step">
+                    <p class="step-num">01</p>
+                    <div class="step-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </div>
+                    <h3>Hover</h3>
+                    <p>Point at any element in any running Mac app. Loupe highlights it with accessibility info in real-time.</p>
+                </div>
+                <div class="step">
+                    <p class="step-num">02</p>
+                    <div class="step-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    </div>
+                    <h3>Annotate</h3>
+                    <p>Click an element and describe the change you want in plain English. Add multiple annotations.</p>
+                </div>
+                <div class="step">
+                    <p class="step-num">03</p>
+                    <div class="step-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    </div>
+                    <h3>Copy</h3>
+                    <p>One click copies structured output — element roles, hierarchy paths, and search patterns your AI can parse.</p>
+                </div>
+                <div class="step">
+                    <p class="step-num">04</p>
+                    <div class="step-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                    </div>
+                    <h3>Build</h3>
+                    <p>Paste into Claude Code, Cursor, or Codex. Your AI knows exactly which element to change.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section class="features">
+        <div class="container">
+            <div class="reveal">
+                <p class="section-label">Details</p>
+                <h2 class="section-title">Built for precision.</h2>
+                <p class="section-desc">Every feature exists to give AI agents better context.</p>
+            </div>
+            <div class="features-grid reveal">
+                <div class="feature">
+                    <h3><span>&#9678;</span> Any Mac app</h3>
+                    <p>Inspect elements in any running application — native, Electron, Catalyst, anything with accessibility support.</p>
+                </div>
+                <div class="feature">
+                    <h3><span>&#9881;</span> Agent-ready output</h3>
+                    <p>Copies element roles, identifiers, hierarchy paths, and regex search patterns — not just labels.</p>
+                </div>
+                <div class="feature">
+                    <h3><span>&#8998;</span> Floating toolbar</h3>
+                    <p>Stays out of the way until you need it. Collapses to a minimal icon when not in use.</p>
+                </div>
+                <div class="feature">
+                    <h3><span>&#9733;</span> Multi-annotation</h3>
+                    <p>Annotate multiple elements before copying. Batch your changes and send them all at once.</p>
+                </div>
+                <div class="feature">
+                    <h3><span>&#9783;</span> Hierarchy paths</h3>
+                    <p>See where elements sit in the accessibility tree. AI agents use this to disambiguate similar elements.</p>
+                </div>
+                <div class="feature">
+                    <h3><span>&#9707;</span> macOS native</h3>
+                    <p>Built with SwiftUI. Runs natively on Apple Silicon and Intel. No runtime dependencies.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Download -->
+    <section class="download">
+        <div class="container">
+            <div class="download-card reveal">
+                <div class="download-icon"><img src="app-icon.png" alt="Loupe icon"></div>
+                <h2>Get Loupe</h2>
+                <p>Free, open source, MIT licensed.<br>macOS 14.0+ (Sonoma) required.</p>
+                <a href="https://github.com/smughead/Loupe/releases/latest" class="btn btn-primary">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    Download .dmg
+                </a>
+                <p class="download-meta">
+                    or <a href="https://github.com/smughead/Loupe" target="_blank" rel="noopener">build from source</a>
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <div class="container">
+            <div class="footer-left">
+                Built by <a href="https://github.com/smughead" target="_blank" rel="noopener">Brent Ritchie</a> &middot; MIT License
+            </div>
+            <ul class="footer-links">
+                <li><a href="https://github.com/smughead/Loupe" target="_blank" rel="noopener">GitHub</a></li>
+                <li><a href="https://github.com/smughead/Loupe/releases" target="_blank" rel="noopener">Releases</a></li>
+            </ul>
+        </div>
+    </footer>
+
+    <!-- Scroll reveal -->
+    <script>
+        const reveals = document.querySelectorAll('.reveal');
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('visible');
+                }
+            });
+        }, { threshold: 0.15 });
+        reveals.forEach(el => observer.observe(el));
+    </script>
+
+</body>
+</html>

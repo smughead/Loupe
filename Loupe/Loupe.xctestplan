@@ -1,0 +1,35 @@
+{
+  "configurations" : [
+    {
+      "id" : "CA3AAE1D-B5A1-4A59-8FA5-F07765DC5EB6",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:Loupe.xcodeproj",
+      "identifier" : "8BC2655B2DEDD3F400F279A4",
+      "name" : "Loupe"
+    }
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:Loupe.xcodeproj",
+        "identifier" : "8BC265732DEDD3F500F279A4",
+        "name" : "LoupeUITests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:LoupePackage",
+        "identifier" : "LoupeFeatureTests",
+        "name" : "LoupeFeatureTests"
+      }
+    }
+  ],
+  "version" : 1
+}
