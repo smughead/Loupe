@@ -401,6 +401,55 @@
             line-height: 1.6;
         }
 
+        /* ── Inspiration callout ── */
+        .inspiration {
+            margin-top: 56px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .inspiration-card {
+            max-width: 520px;
+            padding: 24px 28px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--accent);
+            border-radius: 12px;
+            text-align: left;
+        }
+
+        .inspiration-card h4 {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+            letter-spacing: -0.01em;
+        }
+
+        .inspiration-card p {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+            margin-bottom: 12px;
+        }
+
+        .inspiration-card a {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--accent);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        .inspiration-card a:hover {
+            color: var(--accent-hover);
+        }
+
+        .inspiration-card a::after {
+            content: ' →';
+        }
+
         /* ── Features ── */
         .features {
             border-top: 1px solid var(--border);
@@ -719,6 +768,13 @@
                     </div>
                     <h3>Build</h3>
                     <p>Paste into Claude Code, Cursor, or Codex. Your AI knows exactly which element to change.</p>
+                </div>
+            </div>
+            <div class="inspiration reveal">
+                <div class="inspiration-card">
+                    <h4>Inspired by Agentation</h4>
+                    <p>Agentation pioneered this hover-annotate-copy workflow for web development. Loupe brings the same idea to macOS native apps.</p>
+                    <a href="https://agentation.dev/" target="_blank" rel="noopener">agentation.dev</a>
                 </div>
             </div>
         </div>
