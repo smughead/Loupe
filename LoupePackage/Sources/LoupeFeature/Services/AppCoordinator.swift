@@ -17,6 +17,7 @@ public final class AppCoordinator {
 
     public let floatingToolbar = FloatingToolbarWindowController()
     private let onboardingWindow = OnboardingWindowController()
+    private let toolbarTipController = ToolbarTipWindowController()
 
     // MARK: - Shared State
 
@@ -227,6 +228,12 @@ public final class AppCoordinator {
             }
         }
 
+        // Show toolbar tooltip after fade-in completes (0.4s animation + 0.4s extra delay)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self, let toolbarWindow = self.floatingToolbar.window else { return }
+            self.toolbarTipController.showIfNeeded(relativeTo: toolbarWindow)
+        }
+
         // Update toolbar with initial state
         floatingToolbar.updateAvailableApps(inspector.runningApps)
         floatingToolbar.updateSelectedApp(selectedApp)
@@ -255,5 +262,6 @@ public final class AppCoordinator {
     public func cleanup() {
         stopInspection()
         onboardingWindow.dismiss()
+        toolbarTipController.dismiss()
     }
 }

@@ -28,11 +28,21 @@ public final class OnboardingWindowController {
             },
             onOpenSettings: { [weak self] in
                 self?.openSystemSettings()
+            },
+            onWatchDemo: { [weak self] in
+                self?.showDemo()
+            },
+            onSkipDemo: { [weak self] in
+                self?.fadeOutAndComplete()
+            },
+            onDemoFinished: { [weak self] in
+                self?.state.stopVideo()
+                self?.fadeOutAndComplete()
             }
         )
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 400),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 620),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -55,6 +65,7 @@ public final class OnboardingWindowController {
     /// Dismiss the onboarding window immediately (e.g., on app termination).
     public func dismiss() {
         stopPermissionPolling()
+        state.stopVideo()
         window?.close()
         window = nil
     }
@@ -73,6 +84,21 @@ public final class OnboardingWindowController {
     private func openSystemSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
+        }
+    }
+
+    // MARK: - Demo Flow
+
+    private func showDemo() {
+        state.prepareVideoPlayer()
+
+        withAnimation(.easeOut(duration: 0.3)) {
+            state.phase = .watchingDemo
+        }
+
+        // Start playback after a short delay to let the transition settle
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.state.playVideo()
         }
     }
 
@@ -99,11 +125,6 @@ public final class OnboardingWindowController {
         // Transition to granted phase with animation
         withAnimation(.easeOut(duration: 0.4)) {
             state.phase = .permissionGranted
-        }
-
-        // After a short delay, fade out the window and call onComplete
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.fadeOutAndComplete()
         }
     }
 
